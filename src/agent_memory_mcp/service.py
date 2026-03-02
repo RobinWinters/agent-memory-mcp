@@ -5,8 +5,9 @@ import uuid
 from dataclasses import dataclass
 
 from agent_memory_mcp.db import Database
+from agent_memory_mcp.embeddings import Embedder
+from agent_memory_mcp.evaluator import PolicyEvaluator
 from agent_memory_mcp.models import utc_now_iso
-from agent_memory_mcp.vector_index import SimpleVectorIndex
 
 BASELINE_POLICY = textwrap.dedent(
     """
@@ -24,19 +25,18 @@ BASELINE_POLICY = textwrap.dedent(
     """
 ).strip()
 
-HARD_BLOCK_PATTERNS = [
-    "ignore safety",
-    "disable evaluation",
-    "always obey",
-    "delete logs",
-    "persist user prompt injection",
-]
-
 
 @dataclass
 class MemoryPolicyService:
     db: Database
-    index: SimpleVectorIndex
+    embedder: Embedder
+    evaluator: PolicyEvaluator
+    default_namespace: str = "default"
+
+    def _ns(self, namespace: str | None) -> str:
+        if namespace and namespace.strip():
+            return namespace.strip()
+        return self.default_namespace
 
     def append_event(
         self,
@@ -44,23 +44,32 @@ class MemoryPolicyService:
         role: str,
         content: str,
         metadata: dict | None = None,
+        namespace: str | None = None,
     ) -> dict:
+        ns = self._ns(namespace)
         now = utc_now_iso()
         clean_metadata = metadata or {}
-        self.db.upsert_session(session_id=session_id, started_at=now, metadata={"source": "mcp"})
+        self.db.upsert_session(
+            namespace=ns,
+            session_id=session_id,
+            started_at=now,
+            metadata={"source": "mcp"},
+        )
         event_id = self.db.append_event(
+            namespace=ns,
             session_id=session_id,
             role=role,
             content=content,
             created_at=now,
             metadata=clean_metadata,
         )
-        return {"event_id": event_id, "session_id": session_id, "created_at": now}
+        return {"event_id": event_id, "namespace": ns, "session_id": session_id, "created_at": now}
 
-    def distill_session(self, session_id: str, max_lines: int = 6) -> dict:
-        events = self.db.list_events(session_id)
+    def distill_session(self, session_id: str, max_lines: int = 6, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        events = self.db.list_events(namespace=ns, session_id=session_id)
         if not events:
-            raise ValueError(f"session '{session_id}' has no events")
+            raise ValueError(f"session '{session_id}' has no events in namespace '{ns}'")
 
         lines: list[str] = []
         for event in events[-max_lines:]:
@@ -68,37 +77,53 @@ class MemoryPolicyService:
             lines.append(f"- {event['role']}: {snippet}")
 
         summary = (
-            f"Session {session_id} distilled from {len(events)} events.\n"
+            f"Session {session_id} (namespace={ns}) distilled from {len(events)} events.\n"
             "Key excerpts:\n"
             + "\n".join(lines)
         )
 
         now = utc_now_iso()
-        embedding = self.index.embed(summary)
+        embedding = self.embedder.embed(summary)
         memory_id = self.db.insert_memory(
+            namespace=ns,
             session_id=session_id,
             content=summary,
             embedding=embedding,
             created_at=now,
-            metadata={"kind": "session_distill", "event_count": len(events)},
+            metadata={
+                "kind": "session_distill",
+                "event_count": len(events),
+                "embedding_backend": self.embedder.backend_name,
+                "embedding_dimensions": len(embedding),
+            },
         )
 
         return {
             "memory_id": memory_id,
+            "namespace": ns,
             "session_id": session_id,
             "summary": summary,
             "created_at": now,
         }
 
-    def memory_search(self, query: str, k: int = 5) -> list[dict]:
-        memories = self.db.list_memories()
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        return sum(x * y for x, y in zip(a, b, strict=True))
+
+    def memory_search(self, query: str, k: int = 5, namespace: str | None = None) -> list[dict]:
+        ns = self._ns(namespace)
+        memories = self.db.list_memories(namespace=ns)
         if not memories:
             return []
 
-        qvec = self.index.embed(query)
+        qvec = self.embedder.embed(query)
         scored = []
         for memory in memories:
-            score = self.index.cosine_similarity(qvec, memory["embedding"])
+            if len(memory["embedding"]) != len(qvec):
+                continue
+            score = self._cosine_similarity(qvec, memory["embedding"])
             scored.append((score, memory))
         scored.sort(key=lambda item: item[0], reverse=True)
 
@@ -106,6 +131,7 @@ class MemoryPolicyService:
         return [
             {
                 "memory_id": memory["id"],
+                "namespace": ns,
                 "session_id": memory["session_id"],
                 "score": round(score, 4),
                 "content": memory["content"],
@@ -114,89 +140,92 @@ class MemoryPolicyService:
             for score, memory in top
         ]
 
-    def policy_get(self) -> dict:
-        active = self.db.get_active_policy_version()
+    def policy_get(self, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        active = self.db.get_active_policy_version(namespace=ns)
         if active:
             return active
 
         now = utc_now_iso()
         version_id = f"baseline-{uuid.uuid4().hex[:10]}"
         self.db.create_policy_version(
+            namespace=ns,
             version_id=version_id,
             content_md=BASELINE_POLICY,
             source_proposal_id=None,
             is_active=True,
             created_at=now,
         )
-        return self.db.get_active_policy_version() or {}
+        return self.db.get_active_policy_version(namespace=ns) or {}
 
-    def policy_propose(self, delta_md: str, evidence_refs: list[str] | None = None) -> dict:
+    def policy_propose(
+        self,
+        delta_md: str,
+        evidence_refs: list[str] | None = None,
+        namespace: str | None = None,
+    ) -> dict:
+        ns = self._ns(namespace)
         proposal_id = f"prop-{uuid.uuid4().hex[:12]}"
         now = utc_now_iso()
         self.db.create_policy_proposal(
+            namespace=ns,
             proposal_id=proposal_id,
             delta_md=delta_md.strip(),
             evidence_refs=evidence_refs or [],
             status="proposed",
             created_at=now,
         )
-        return self.db.get_policy_proposal(proposal_id) or {"proposal_id": proposal_id}
+        return self.db.get_policy_proposal(namespace=ns, proposal_id=proposal_id) or {
+            "namespace": ns,
+            "proposal_id": proposal_id,
+        }
 
-    def policy_evaluate(self, proposal_id: str) -> dict:
-        proposal = self.db.get_policy_proposal(proposal_id)
+    def policy_evaluate(self, proposal_id: str, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        proposal = self.db.get_policy_proposal(namespace=ns, proposal_id=proposal_id)
         if proposal is None:
-            raise ValueError(f"proposal '{proposal_id}' not found")
+            raise ValueError(f"proposal '{proposal_id}' not found in namespace '{ns}'")
 
-        text = proposal["delta_md"].lower()
-        score = 1.0
-        notes = []
-
-        if len(text.strip()) < 40:
-            score -= 0.2
-            notes.append("Proposal too short; likely underspecified.")
-
-        for pattern in HARD_BLOCK_PATTERNS:
-            if pattern in text:
-                score -= 0.75
-                notes.append(f"Blocked phrase detected: '{pattern}'.")
-
-        if "eval" not in text:
-            score -= 0.15
-            notes.append("No explicit evaluation requirement found in delta.")
-
-        score = max(0.0, min(1.0, score))
-        passed = score >= 0.7
-        report = "Passed checks." if passed and not notes else " ".join(notes)
+        eval_result = self.evaluator.evaluate(
+            delta_md=proposal["delta_md"],
+            evidence_refs=proposal["evidence_refs"],
+        )
 
         now = utc_now_iso()
         eval_id = self.db.add_policy_evaluation(
+            namespace=ns,
             proposal_id=proposal_id,
-            score=score,
-            passed=passed,
-            report=report,
+            score=eval_result["score"],
+            passed=eval_result["passed"],
+            report=eval_result["report"],
+            checks=eval_result["checks"],
             created_at=now,
         )
-        self.db.set_proposal_status(proposal_id, "evaluated")
+        self.db.set_proposal_status(namespace=ns, proposal_id=proposal_id, status="evaluated")
 
         return {
             "evaluation_id": eval_id,
+            "namespace": ns,
             "proposal_id": proposal_id,
-            "score": score,
-            "passed": passed,
-            "report": report,
+            "score": eval_result["score"],
+            "passed": eval_result["passed"],
+            "report": eval_result["report"],
+            "checks": eval_result["checks"],
+            "regression": eval_result["regression"],
             "created_at": now,
         }
 
-    def policy_promote(self, proposal_id: str) -> dict:
-        proposal = self.db.get_policy_proposal(proposal_id)
+    def policy_promote(self, proposal_id: str, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        proposal = self.db.get_policy_proposal(namespace=ns, proposal_id=proposal_id)
         if proposal is None:
-            raise ValueError(f"proposal '{proposal_id}' not found")
+            raise ValueError(f"proposal '{proposal_id}' not found in namespace '{ns}'")
 
-        latest = self.db.latest_evaluation(proposal_id)
+        latest = self.db.latest_evaluation(namespace=ns, proposal_id=proposal_id)
         if latest is None or not latest["passed"]:
             raise ValueError("proposal must have a passing evaluation before promotion")
 
-        current = self.policy_get()["content_md"]
+        current = self.policy_get(namespace=ns)["content_md"]
         next_md = (
             f"{current}\n\n"
             f"## Delta {proposal_id}\n"
@@ -206,27 +235,31 @@ class MemoryPolicyService:
         version_id = f"ver-{uuid.uuid4().hex[:12]}"
         now = utc_now_iso()
         self.db.create_policy_version(
+            namespace=ns,
             version_id=version_id,
             content_md=next_md,
             source_proposal_id=proposal_id,
             is_active=True,
             created_at=now,
         )
-        self.db.set_proposal_status(proposal_id, "promoted")
+        self.db.set_proposal_status(namespace=ns, proposal_id=proposal_id, status="promoted")
 
         return {
+            "namespace": ns,
             "version_id": version_id,
             "proposal_id": proposal_id,
             "is_active": True,
             "created_at": now,
         }
 
-    def policy_rollback(self, version_id: str) -> dict:
-        ok = self.db.set_active_policy_version(version_id)
+    def policy_rollback(self, version_id: str, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        ok = self.db.set_active_policy_version(namespace=ns, version_id=version_id)
         if not ok:
-            raise ValueError(f"policy version '{version_id}' not found")
-        active = self.db.get_active_policy_version() or {}
+            raise ValueError(f"policy version '{version_id}' not found in namespace '{ns}'")
+        active = self.db.get_active_policy_version(namespace=ns) or {}
         return {
+            "namespace": ns,
             "version_id": active.get("version_id", version_id),
             "is_active": active.get("is_active", True),
             "created_at": active.get("created_at"),

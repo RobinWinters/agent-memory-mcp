@@ -1,25 +1,40 @@
 # agent-memory-mcp
 
-MVP for agent self-improvement memory and policy management over MCP.
+MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
+pluggable embeddings, and a structured policy evaluator.
 
-## What this repo does
+## Current build status (v0.2.0)
 
-- Stores immutable session events in SQLite.
-- Distills sessions into memory notes.
-- Indexes distilled notes with deterministic local vectors.
-- Supports policy propose/evaluate/promote/rollback lifecycle.
-- Exposes everything as MCP tools.
+Implemented now:
+
+- Immutable event ingest and session distillation into memory notes.
+- Namespace-aware data partitioning across all memory and policy entities.
+- Pluggable embedding backend:
+  - `hash` (default, offline deterministic)
+  - `openai` (remote embeddings API)
+- Structured policy evaluator with weighted checks and regression suite replay.
+- Policy lifecycle with gating:
+  - `propose` -> `evaluate` -> `promote` -> `rollback`
 
 ## MCP tools
 
-- `memory.append(session_id, role, content, metadata?)`
-- `memory.distill(session_id, max_lines=6)`
-- `memory.search(query, k=5)`
-- `policy.get(active_version=true)`
-- `policy.propose(delta_md, evidence_refs=[])`
-- `policy.evaluate(proposal_id)`
-- `policy.promote(proposal_id)`
-- `policy.rollback(version_id)`
+- `memory.append(session_id, role, content, metadata?, namespace?)`
+- `memory.distill(session_id, max_lines=6, namespace?)`
+- `memory.search(query, k=5, namespace?)`
+- `policy.get(active_version=true, namespace?)`
+- `policy.propose(delta_md, evidence_refs=[], namespace?)`
+- `policy.evaluate(proposal_id, namespace?)`
+- `policy.promote(proposal_id, namespace?)`
+- `policy.rollback(version_id, namespace?)`
+
+## Environment
+
+- `AGENT_MEMORY_DB` (default: `./data/agent_memory.db`)
+- `AGENT_MEMORY_NAMESPACE` (default: `default`)
+- `AGENT_MEMORY_EMBEDDING_BACKEND` (`hash` or `openai`, default: `hash`)
+- `OPENAI_API_KEY` (required when backend is `openai`)
+- `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`)
+- `AGENT_MEMORY_POLICY_PASS_THRESHOLD` (default: `0.75`)
 
 ## Quickstart
 
@@ -27,59 +42,35 @@ MVP for agent self-improvement memory and policy management over MCP.
 cd <repo-root>
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install ".[dev]"
 pytest -q
 ```
 
-Run server (stdio transport):
+Run MCP server over stdio:
 
 ```bash
 source .venv/bin/activate
 agent-memory-mcp
 ```
 
-Optional DB location:
+## Local evaluator regression suite
 
-```bash
-export AGENT_MEMORY_DB=/absolute/path/to/agent_memory.db
-agent-memory-mcp
-```
+Regression cases live in `evals/policy_regression_cases.json` and are replayed during
+`policy.evaluate`.
 
-## Example MCP workflow
+## Concrete build plan from here
 
-1. Append raw events for a session.
-2. Distill that session into a memory note.
-3. Search memory notes for evidence.
-4. Propose a policy delta with evidence refs.
-5. Evaluate proposal.
-6. Promote only if evaluation passes.
-7. Roll back to a prior version if needed.
+1. Add provider adapters for Qdrant/pgvector and switch memory search from full-scan to ANN.
+2. Add authN/authZ for MCP tool calls (namespace ACLs + signed client identity).
+3. Add asynchronous ingestion/distillation workers and background eval jobs.
+4. Add replay benchmark harness with dataset snapshots and trend reporting.
+5. Add policy artifact signing and tamper-evident audit logs.
 
-## Suggested next engineering upgrades
-
-- Replace deterministic vectors with embedding provider + proper vector DB.
-- Add signed policy bundles and a stricter evaluator harness.
-- Add namespaces/ACLs for multi-tenant agent environments.
-- Add offline replay evals with regression datasets.
-
-## Publish as a public GitHub repo
+## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Initial MVP: memory+policy MCP server"
-```
-
-If GitHub CLI is authenticated:
-
-```bash
-gh repo create agent-memory-mcp --public --source=. --remote=origin --push
-```
-
-Or manual remote setup:
-
-```bash
-git remote add origin git@github.com:<your-username>/agent-memory-mcp.git
-git branch -M main
-git push -u origin main
+git commit -m "Build out v0.2.0: namespaces, embeddings, evaluator"
+git push
 ```

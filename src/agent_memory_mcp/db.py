@@ -6,6 +6,16 @@ from pathlib import Path
 from typing import Any
 
 
+NAMESPACED_TABLES = [
+    "sessions",
+    "events",
+    "memories",
+    "policy_proposals",
+    "policy_evaluations",
+    "policy_versions",
+]
+
+
 class Database:
     def __init__(self, db_path: str) -> None:
         self.path = Path(db_path)
@@ -21,6 +31,7 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 started_at TEXT NOT NULL,
                 ended_at TEXT,
                 metadata_json TEXT NOT NULL
@@ -28,26 +39,27 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                metadata_json TEXT NOT NULL,
-                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+                metadata_json TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                metadata_json TEXT NOT NULL,
-                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+                metadata_json TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS policy_proposals (
                 proposal_id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 delta_md TEXT NOT NULL,
                 evidence_json TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -56,48 +68,85 @@ class Database:
 
             CREATE TABLE IF NOT EXISTS policy_evaluations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 proposal_id TEXT NOT NULL,
                 score REAL NOT NULL,
                 passed INTEGER NOT NULL,
                 report TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(proposal_id) REFERENCES policy_proposals(proposal_id)
+                checks_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS policy_versions (
                 version_id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL DEFAULT 'default',
                 content_md TEXT NOT NULL,
                 source_proposal_id TEXT,
                 is_active INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY(source_proposal_id) REFERENCES policy_proposals(proposal_id)
+                created_at TEXT NOT NULL
             );
+            """
+        )
 
-            CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id, created_at);
-            CREATE INDEX IF NOT EXISTS idx_policy_eval_proposal ON policy_evaluations(proposal_id, created_at);
+        self._migrate_existing_tables()
+
+        self.conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sessions_namespace ON sessions(namespace, session_id);
+            CREATE INDEX IF NOT EXISTS idx_events_ns_session ON events(namespace, session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_memories_ns_session ON memories(namespace, session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_policy_prop_ns ON policy_proposals(namespace, proposal_id);
+            CREATE INDEX IF NOT EXISTS idx_policy_eval_ns_proposal ON policy_evaluations(namespace, proposal_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_policy_ver_ns_active ON policy_versions(namespace, is_active, created_at);
             """
         )
         self.conn.commit()
 
-    def upsert_session(self, session_id: str, started_at: str, metadata: dict[str, Any]) -> None:
+    def _migrate_existing_tables(self) -> None:
+        for table in NAMESPACED_TABLES:
+            if not self._table_has_column(table, "namespace"):
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'"
+                )
+
+        if not self._table_has_column("policy_evaluations", "checks_json"):
+            self.conn.execute(
+                "ALTER TABLE policy_evaluations ADD COLUMN checks_json TEXT NOT NULL DEFAULT '[]'"
+            )
+
+        self.conn.commit()
+
+    def _table_has_column(self, table_name: str, column_name: str) -> bool:
+        rows = self.conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return any(row["name"] == column_name for row in rows)
+
+    @staticmethod
+    def _session_pk(namespace: str, session_id: str) -> str:
+        return f"{namespace}::{session_id}"
+
+    def upsert_session(
+        self,
+        namespace: str,
+        session_id: str,
+        started_at: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        session_pk = self._session_pk(namespace=namespace, session_id=session_id)
         self.conn.execute(
             """
-            INSERT INTO sessions(session_id, started_at, metadata_json)
-            VALUES (?, ?, ?)
+            INSERT INTO sessions(session_id, namespace, started_at, metadata_json)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
+                namespace=excluded.namespace,
                 metadata_json=excluded.metadata_json
             """,
-            (session_id, started_at, json.dumps(metadata)),
+            (session_pk, namespace, started_at, json.dumps(metadata)),
         )
-        self.conn.commit()
-
-    def end_session(self, session_id: str, ended_at: str) -> None:
-        self.conn.execute("UPDATE sessions SET ended_at=? WHERE session_id=?", (ended_at, session_id))
         self.conn.commit()
 
     def append_event(
         self,
+        namespace: str,
         session_id: str,
         role: str,
         content: str,
@@ -106,22 +155,28 @@ class Database:
     ) -> int:
         cursor = self.conn.execute(
             """
-            INSERT INTO events(session_id, role, content, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO events(namespace, session_id, role, content, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (session_id, role, content, created_at, json.dumps(metadata)),
+            (namespace, session_id, role, content, created_at, json.dumps(metadata)),
         )
         self.conn.commit()
         return int(cursor.lastrowid)
 
-    def list_events(self, session_id: str) -> list[dict[str, Any]]:
+    def list_events(self, namespace: str, session_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT id, session_id, role, content, created_at, metadata_json FROM events WHERE session_id=? ORDER BY id ASC",
-            (session_id,),
+            """
+            SELECT id, namespace, session_id, role, content, created_at, metadata_json
+            FROM events
+            WHERE namespace=? AND session_id=?
+            ORDER BY id ASC
+            """,
+            (namespace, session_id),
         ).fetchall()
         return [
             {
                 "id": row["id"],
+                "namespace": row["namespace"],
                 "session_id": row["session_id"],
                 "role": row["role"],
                 "content": row["content"],
@@ -133,6 +188,7 @@ class Database:
 
     def insert_memory(
         self,
+        namespace: str,
         session_id: str,
         content: str,
         embedding: list[float],
@@ -141,21 +197,28 @@ class Database:
     ) -> int:
         cursor = self.conn.execute(
             """
-            INSERT INTO memories(session_id, content, embedding_json, created_at, metadata_json)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO memories(namespace, session_id, content, embedding_json, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (session_id, content, json.dumps(embedding), created_at, json.dumps(metadata)),
+            (namespace, session_id, content, json.dumps(embedding), created_at, json.dumps(metadata)),
         )
         self.conn.commit()
         return int(cursor.lastrowid)
 
-    def list_memories(self) -> list[dict[str, Any]]:
+    def list_memories(self, namespace: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT id, session_id, content, embedding_json, created_at, metadata_json FROM memories ORDER BY id ASC"
+            """
+            SELECT id, namespace, session_id, content, embedding_json, created_at, metadata_json
+            FROM memories
+            WHERE namespace=?
+            ORDER BY id ASC
+            """,
+            (namespace,),
         ).fetchall()
         return [
             {
                 "id": row["id"],
+                "namespace": row["namespace"],
                 "session_id": row["session_id"],
                 "content": row["content"],
                 "embedding": json.loads(row["embedding_json"]),
@@ -167,6 +230,7 @@ class Database:
 
     def create_policy_proposal(
         self,
+        namespace: str,
         proposal_id: str,
         delta_md: str,
         evidence_refs: list[str],
@@ -175,25 +239,33 @@ class Database:
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO policy_proposals(proposal_id, delta_md, evidence_json, status, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO policy_proposals(namespace, proposal_id, delta_md, evidence_json, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (proposal_id, delta_md, json.dumps(evidence_refs), status, created_at),
+            (namespace, proposal_id, delta_md, json.dumps(evidence_refs), status, created_at),
         )
         self.conn.commit()
 
-    def set_proposal_status(self, proposal_id: str, status: str) -> None:
-        self.conn.execute("UPDATE policy_proposals SET status=? WHERE proposal_id=?", (status, proposal_id))
+    def set_proposal_status(self, namespace: str, proposal_id: str, status: str) -> None:
+        self.conn.execute(
+            "UPDATE policy_proposals SET status=? WHERE namespace=? AND proposal_id=?",
+            (status, namespace, proposal_id),
+        )
         self.conn.commit()
 
-    def get_policy_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+    def get_policy_proposal(self, namespace: str, proposal_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT proposal_id, delta_md, evidence_json, status, created_at FROM policy_proposals WHERE proposal_id=?",
-            (proposal_id,),
+            """
+            SELECT namespace, proposal_id, delta_md, evidence_json, status, created_at
+            FROM policy_proposals
+            WHERE namespace=? AND proposal_id=?
+            """,
+            (namespace, proposal_id),
         ).fetchone()
         if row is None:
             return None
         return {
+            "namespace": row["namespace"],
             "proposal_id": row["proposal_id"],
             "delta_md": row["delta_md"],
             "evidence_refs": json.loads(row["evidence_json"]),
@@ -203,46 +275,51 @@ class Database:
 
     def add_policy_evaluation(
         self,
+        namespace: str,
         proposal_id: str,
         score: float,
         passed: bool,
         report: str,
+        checks: list[dict[str, Any]],
         created_at: str,
     ) -> int:
         cursor = self.conn.execute(
             """
-            INSERT INTO policy_evaluations(proposal_id, score, passed, report, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO policy_evaluations(namespace, proposal_id, score, passed, report, checks_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (proposal_id, score, int(passed), report, created_at),
+            (namespace, proposal_id, score, int(passed), report, json.dumps(checks), created_at),
         )
         self.conn.commit()
         return int(cursor.lastrowid)
 
-    def latest_evaluation(self, proposal_id: str) -> dict[str, Any] | None:
+    def latest_evaluation(self, namespace: str, proposal_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT id, proposal_id, score, passed, report, created_at
+            SELECT id, namespace, proposal_id, score, passed, report, checks_json, created_at
             FROM policy_evaluations
-            WHERE proposal_id=?
+            WHERE namespace=? AND proposal_id=?
             ORDER BY id DESC
             LIMIT 1
             """,
-            (proposal_id,),
+            (namespace, proposal_id),
         ).fetchone()
         if row is None:
             return None
         return {
             "id": row["id"],
+            "namespace": row["namespace"],
             "proposal_id": row["proposal_id"],
             "score": row["score"],
             "passed": bool(row["passed"]),
             "report": row["report"],
+            "checks": json.loads(row["checks_json"]),
             "created_at": row["created_at"],
         }
 
     def create_policy_version(
         self,
+        namespace: str,
         version_id: str,
         content_md: str,
         source_proposal_id: str | None,
@@ -250,40 +327,51 @@ class Database:
         created_at: str,
     ) -> None:
         if is_active:
-            self.conn.execute("UPDATE policy_versions SET is_active=0 WHERE is_active=1")
+            self.conn.execute(
+                "UPDATE policy_versions SET is_active=0 WHERE namespace=? AND is_active=1",
+                (namespace,),
+            )
         self.conn.execute(
             """
-            INSERT INTO policy_versions(version_id, content_md, source_proposal_id, is_active, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO policy_versions(namespace, version_id, content_md, source_proposal_id, is_active, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (version_id, content_md, source_proposal_id, int(is_active), created_at),
+            (namespace, version_id, content_md, source_proposal_id, int(is_active), created_at),
         )
         self.conn.commit()
 
-    def set_active_policy_version(self, version_id: str) -> bool:
+    def set_active_policy_version(self, namespace: str, version_id: str) -> bool:
         exists = self.conn.execute(
-            "SELECT 1 FROM policy_versions WHERE version_id=?",
-            (version_id,),
+            "SELECT 1 FROM policy_versions WHERE namespace=? AND version_id=?",
+            (namespace, version_id),
         ).fetchone()
         if exists is None:
             return False
-        self.conn.execute("UPDATE policy_versions SET is_active=0 WHERE is_active=1")
-        self.conn.execute("UPDATE policy_versions SET is_active=1 WHERE version_id=?", (version_id,))
+        self.conn.execute(
+            "UPDATE policy_versions SET is_active=0 WHERE namespace=? AND is_active=1",
+            (namespace,),
+        )
+        self.conn.execute(
+            "UPDATE policy_versions SET is_active=1 WHERE namespace=? AND version_id=?",
+            (namespace, version_id),
+        )
         self.conn.commit()
         return True
 
-    def get_active_policy_version(self) -> dict[str, Any] | None:
+    def get_active_policy_version(self, namespace: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT version_id, content_md, source_proposal_id, is_active, created_at
+            SELECT namespace, version_id, content_md, source_proposal_id, is_active, created_at
             FROM policy_versions
-            WHERE is_active=1
+            WHERE namespace=? AND is_active=1
             LIMIT 1
-            """
+            """,
+            (namespace,),
         ).fetchone()
         if row is None:
             return None
         return {
+            "namespace": row["namespace"],
             "version_id": row["version_id"],
             "content_md": row["content_md"],
             "source_proposal_id": row["source_proposal_id"],
@@ -291,18 +379,19 @@ class Database:
             "created_at": row["created_at"],
         }
 
-    def get_policy_version(self, version_id: str) -> dict[str, Any] | None:
+    def get_policy_version(self, namespace: str, version_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT version_id, content_md, source_proposal_id, is_active, created_at
+            SELECT namespace, version_id, content_md, source_proposal_id, is_active, created_at
             FROM policy_versions
-            WHERE version_id=?
+            WHERE namespace=? AND version_id=?
             """,
-            (version_id,),
+            (namespace, version_id),
         ).fetchone()
         if row is None:
             return None
         return {
+            "namespace": row["namespace"],
             "version_id": row["version_id"],
             "content_md": row["content_md"],
             "source_proposal_id": row["source_proposal_id"],
