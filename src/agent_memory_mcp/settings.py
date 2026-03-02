@@ -12,6 +12,9 @@ class Settings:
     openai_api_key: str | None
     openai_embedding_model: str
     policy_pass_threshold: float
+    auth_mode: str
+    auth_api_keys_json: str | None
+    auth_api_keys_file: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -22,6 +25,9 @@ class Settings:
         openai_api_key = os.getenv("OPENAI_API_KEY")
         openai_embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
         threshold_raw = os.getenv("AGENT_MEMORY_POLICY_PASS_THRESHOLD", "0.75")
+        auth_mode = os.getenv("AGENT_MEMORY_AUTH_MODE", "off").strip().lower()
+        auth_api_keys_json = os.getenv("AGENT_MEMORY_API_KEYS_JSON")
+        auth_api_keys_file = os.getenv("AGENT_MEMORY_API_KEYS_FILE")
 
         try:
             threshold = float(threshold_raw)
@@ -37,4 +43,7 @@ class Settings:
             openai_api_key=openai_api_key,
             openai_embedding_model=openai_embedding_model,
             policy_pass_threshold=threshold,
+            auth_mode=auth_mode,
+            auth_api_keys_json=auth_api_keys_json,
+            auth_api_keys_file=auth_api_keys_file,
         )
