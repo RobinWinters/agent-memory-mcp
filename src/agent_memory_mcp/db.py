@@ -13,6 +13,7 @@ NAMESPACED_TABLES = [
     "policy_proposals",
     "policy_evaluations",
     "policy_versions",
+    "jobs",
 ]
 
 
@@ -85,6 +86,20 @@ class Database:
                 is_active INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'default',
+                job_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result_json TEXT,
+                error_text TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            );
             """
         )
 
@@ -98,6 +113,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_policy_prop_ns ON policy_proposals(namespace, proposal_id);
             CREATE INDEX IF NOT EXISTS idx_policy_eval_ns_proposal ON policy_evaluations(namespace, proposal_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_policy_ver_ns_active ON policy_versions(namespace, is_active, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_ns_status_created ON jobs(namespace, status, created_at);
             """
         )
         self.conn.commit()
@@ -430,6 +446,110 @@ class Database:
             "is_active": bool(row["is_active"]),
             "created_at": row["created_at"],
         }
+
+    def create_job(
+        self,
+        namespace: str,
+        job_type: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO jobs(namespace, job_type, payload_json, status, result_json, error_text, created_at, updated_at, started_at, finished_at)
+            VALUES (?, ?, ?, 'queued', NULL, NULL, ?, ?, NULL, NULL)
+            """,
+            (namespace, job_type, json.dumps(payload), created_at, created_at),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def get_job(self, namespace: str, job_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT id, namespace, job_type, payload_json, status, result_json, error_text, created_at, updated_at, started_at, finished_at
+            FROM jobs
+            WHERE namespace=? AND id=?
+            """,
+            (namespace, job_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "job_id": int(row["id"]),
+            "namespace": row["namespace"],
+            "job_type": row["job_type"],
+            "payload": json.loads(row["payload_json"]),
+            "status": row["status"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "error": row["error_text"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+        }
+
+    def claim_next_queued_job(self, namespace: str, now: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT id
+            FROM jobs
+            WHERE namespace=? AND status='queued'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (namespace,),
+        ).fetchone()
+        if row is None:
+            return None
+
+        job_id = int(row["id"])
+        cursor = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status='running', started_at=?, updated_at=?
+            WHERE id=? AND namespace=? AND status='queued'
+            """,
+            (now, now, job_id, namespace),
+        )
+        self.conn.commit()
+        if cursor.rowcount != 1:
+            return None
+        return self.get_job(namespace=namespace, job_id=job_id)
+
+    def finish_job_success(
+        self,
+        namespace: str,
+        job_id: int,
+        result: dict[str, Any],
+        now: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE jobs
+            SET status='succeeded', result_json=?, error_text=NULL, updated_at=?, finished_at=?
+            WHERE id=? AND namespace=?
+            """,
+            (json.dumps(result), now, now, job_id, namespace),
+        )
+        self.conn.commit()
+
+    def finish_job_failure(
+        self,
+        namespace: str,
+        job_id: int,
+        error_text: str,
+        now: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE jobs
+            SET status='failed', result_json=NULL, error_text=?, updated_at=?, finished_at=?
+            WHERE id=? AND namespace=?
+            """,
+            (error_text, now, now, job_id, namespace),
+        )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

@@ -1,35 +1,44 @@
 # agent-memory-mcp
 
 MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
-pluggable embeddings, pluggable vector backends, structured policy evaluation, and API-key ACL authorization.
+pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, and durable async jobs.
 
-## Current build status (v0.4.0)
+## Current build status (v0.5.0)
 
-Implemented now:
+Implemented:
 
 - Immutable event ingest and session distillation into memory notes.
-- Namespace-aware data partitioning across all memory and policy entities.
+- Namespace-aware partitioning for memory, policy, and jobs.
 - Pluggable embedding backend:
   - `hash` (default, offline deterministic)
   - `openai` (remote embeddings API)
 - Pluggable vector search backend:
   - `sqlite` (default, local full-scan)
-  - `qdrant` (ANN-capable external vector store)
-- Structured policy evaluator with weighted checks and regression suite replay.
+  - `qdrant` (external ANN)
+- Structured policy evaluator with weighted checks + regression replay.
 - Policy lifecycle with gating:
   - `propose` -> `evaluate` -> `promote` -> `rollback`
-- API-key auth and ACL scope enforcement at the MCP tool layer.
+- API-key auth + ACL scopes.
+- Durable async jobs for `memory.distill` and `policy.evaluate`.
 
 ## MCP tools
 
 - `memory.append(session_id, role, content, metadata?, namespace?, api_key?)`
-- `memory.distill(session_id, max_lines=6, namespace?, api_key?)`
+- `memory.distill(session_id, max_lines=6, async_mode=false, namespace?, api_key?)`
 - `memory.search(query, k=5, namespace?, api_key?)`
 - `policy.get(active_version=true, namespace?, api_key?)`
 - `policy.propose(delta_md, evidence_refs=[], namespace?, api_key?)`
-- `policy.evaluate(proposal_id, namespace?, api_key?)`
+- `policy.evaluate(proposal_id, async_mode=false, namespace?, api_key?)`
 - `policy.promote(proposal_id, namespace?, api_key?)`
 - `policy.rollback(version_id, namespace?, api_key?)`
+- `jobs.submit(job_type, payload, namespace?, api_key?)`
+- `jobs.run_pending(limit=1, namespace?, api_key?)`
+- `jobs.status(job_id, namespace?, api_key?)`
+- `jobs.result(job_id, namespace?, api_key?)`
+
+Supported `job_type` values:
+- `memory.distill`
+- `policy.evaluate`
 
 ## Environment
 
@@ -54,6 +63,11 @@ Auth:
 - `AGENT_MEMORY_API_KEYS_JSON` (inline key-policy JSON)
 - `AGENT_MEMORY_API_KEYS_FILE` (path to JSON file, preferred in production)
 
+Auth scope families:
+- `memory:*`
+- `policy:*`
+- `jobs:*`
+
 `AGENT_MEMORY_API_KEYS_JSON` / file format:
 
 ```json
@@ -62,13 +76,9 @@ Auth:
     "namespaces": ["*"],
     "scopes": ["*"]
   },
-  "key_memory_reader": {
-    "namespaces": ["default", "tenant-a"],
-    "scopes": ["memory:read"]
-  },
-  "key_policy_ops": {
+  "key_runner": {
     "namespaces": ["tenant-a"],
-    "scopes": ["policy:*", "memory:read", "memory:write"]
+    "scopes": ["memory:read", "memory:write", "policy:*", "jobs:*"]
   }
 }
 ```
@@ -83,12 +93,20 @@ pip install ".[dev]"
 pytest -q
 ```
 
-Run MCP server over stdio:
+Run server:
 
 ```bash
 source .venv/bin/activate
 agent-memory-mcp
 ```
+
+## Async job flow
+
+Example (`memory.distill` async):
+
+1. Call `memory.distill(..., async_mode=true)`.
+2. Call `jobs.run_pending(limit=1)`.
+3. Poll `jobs.status(job_id)` and read `jobs.result(job_id)`.
 
 ## Qdrant setup
 
@@ -109,22 +127,22 @@ agent-memory-mcp
 
 Qdrant is used for vector lookup while SQLite remains canonical storage for full memory records.
 
-## Local evaluator regression suite
+## Regression testing cadence
 
-Regression cases live in `evals/policy_regression_cases.json` and are replayed during
-`policy.evaluate`.
+Recommended while iterating:
 
-## Concrete build plan from here
-
-1. Add asynchronous ingestion/distillation workers and background eval jobs.
-2. Add replay benchmark harness with dataset snapshots and trend reporting.
-3. Add policy artifact signing and tamper-evident audit logs.
+```bash
+source .venv/bin/activate
+pytest tests/test_service.py -q
+pytest tests/test_jobs.py -q
+pytest -q
+```
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.4.0: Qdrant vector backend"
+git commit -m "Build out v0.5.0: async job queue and MCP job tools"
 git push
 ```

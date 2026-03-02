@@ -97,12 +97,18 @@ def memory_append(
 def memory_distill(
     session_id: str,
     max_lines: int = 6,
+    async_mode: bool = False,
     namespace: str | None = None,
     api_key: str | None = None,
 ) -> dict[str, Any]:
     """Create a distilled memory note from session events."""
     resolved_ns = authorize(namespace=namespace, scope="memory:write", api_key=api_key)
-    return get_service().distill_session(session_id=session_id, max_lines=max_lines, namespace=resolved_ns)
+    return get_service().distill_session(
+        session_id=session_id,
+        max_lines=max_lines,
+        namespace=resolved_ns,
+        async_mode=async_mode,
+    )
 
 
 @mcp.tool(name="memory.search")
@@ -144,12 +150,17 @@ def policy_propose(
 @mcp.tool(name="policy.evaluate")
 def policy_evaluate(
     proposal_id: str,
+    async_mode: bool = False,
     namespace: str | None = None,
     api_key: str | None = None,
 ) -> dict[str, Any]:
     """Run weighted gate checks and regression suite for a policy proposal."""
     resolved_ns = authorize(namespace=namespace, scope="policy:evaluate", api_key=api_key)
-    return get_service().policy_evaluate(proposal_id=proposal_id, namespace=resolved_ns)
+    return get_service().policy_evaluate(
+        proposal_id=proposal_id,
+        namespace=resolved_ns,
+        async_mode=async_mode,
+    )
 
 
 @mcp.tool(name="policy.promote")
@@ -172,6 +183,51 @@ def policy_rollback(
     """Rollback active policy to a previously promoted version."""
     resolved_ns = authorize(namespace=namespace, scope="policy:rollback", api_key=api_key)
     return get_service().policy_rollback(version_id=version_id, namespace=resolved_ns)
+
+
+@mcp.tool(name="jobs.submit")
+def jobs_submit(
+    job_type: str,
+    payload: dict[str, Any],
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Submit an async job for supported operations."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:submit", api_key=api_key)
+    return get_service().jobs_submit(job_type=job_type, payload=payload, namespace=resolved_ns)
+
+
+@mcp.tool(name="jobs.run_pending")
+def jobs_run_pending(
+    limit: int = 1,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Run pending jobs for a namespace and persist results."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:run", api_key=api_key)
+    return get_service().jobs_run_pending(limit=limit, namespace=resolved_ns)
+
+
+@mcp.tool(name="jobs.status")
+def jobs_status(
+    job_id: int,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Get current job status without returning full result payload."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().jobs_status(job_id=job_id, namespace=resolved_ns)
+
+
+@mcp.tool(name="jobs.result")
+def jobs_result(
+    job_id: int,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Get final or in-progress job result payload."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().jobs_result(job_id=job_id, namespace=resolved_ns)
 
 
 def main() -> None:

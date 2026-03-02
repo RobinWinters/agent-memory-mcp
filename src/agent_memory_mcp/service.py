@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import Embedder
@@ -26,6 +27,8 @@ BASELINE_POLICY = textwrap.dedent(
     """
 ).strip()
 
+SUPPORTED_JOB_TYPES = {"memory.distill", "policy.evaluate"}
+
 
 @dataclass
 class MemoryPolicyService:
@@ -39,6 +42,14 @@ class MemoryPolicyService:
         if namespace and namespace.strip():
             return namespace.strip()
         return self.default_namespace
+
+    @staticmethod
+    def _coerce_positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return parsed if parsed > 0 else default
 
     def append_event(
         self,
@@ -67,11 +78,10 @@ class MemoryPolicyService:
         )
         return {"event_id": event_id, "namespace": ns, "session_id": session_id, "created_at": now}
 
-    def distill_session(self, session_id: str, max_lines: int = 6, namespace: str | None = None) -> dict:
-        ns = self._ns(namespace)
-        events = self.db.list_events(namespace=ns, session_id=session_id)
+    def _distill_session_sync(self, session_id: str, max_lines: int, namespace: str) -> dict:
+        events = self.db.list_events(namespace=namespace, session_id=session_id)
         if not events:
-            raise ValueError(f"session '{session_id}' has no events in namespace '{ns}'")
+            raise ValueError(f"session '{session_id}' has no events in namespace '{namespace}'")
 
         lines: list[str] = []
         for event in events[-max_lines:]:
@@ -79,7 +89,7 @@ class MemoryPolicyService:
             lines.append(f"- {event['role']}: {snippet}")
 
         summary = (
-            f"Session {session_id} (namespace={ns}) distilled from {len(events)} events.\n"
+            f"Session {session_id} (namespace={namespace}) distilled from {len(events)} events.\n"
             "Key excerpts:\n"
             + "\n".join(lines)
         )
@@ -94,7 +104,7 @@ class MemoryPolicyService:
             "vector_store_backend": self.vector_store.backend_name,
         }
         memory_id = self.db.insert_memory(
-            namespace=ns,
+            namespace=namespace,
             session_id=session_id,
             content=summary,
             embedding=embedding,
@@ -103,7 +113,7 @@ class MemoryPolicyService:
         )
         self.vector_store.upsert(
             memory_id=memory_id,
-            namespace=ns,
+            namespace=namespace,
             session_id=session_id,
             vector=embedding,
             metadata=metadata,
@@ -111,11 +121,28 @@ class MemoryPolicyService:
 
         return {
             "memory_id": memory_id,
-            "namespace": ns,
+            "namespace": namespace,
             "session_id": session_id,
             "summary": summary,
             "created_at": now,
         }
+
+    def distill_session(
+        self,
+        session_id: str,
+        max_lines: int = 6,
+        namespace: str | None = None,
+        async_mode: bool = False,
+    ) -> dict:
+        ns = self._ns(namespace)
+        resolved_max_lines = self._coerce_positive_int(max_lines, default=6)
+        if async_mode:
+            return self.jobs_submit(
+                job_type="memory.distill",
+                payload={"session_id": session_id, "max_lines": resolved_max_lines},
+                namespace=ns,
+            )
+        return self._distill_session_sync(session_id=session_id, max_lines=resolved_max_lines, namespace=ns)
 
     def memory_search(self, query: str, k: int = 5, namespace: str | None = None) -> list[dict]:
         ns = self._ns(namespace)
@@ -185,11 +212,10 @@ class MemoryPolicyService:
             "proposal_id": proposal_id,
         }
 
-    def policy_evaluate(self, proposal_id: str, namespace: str | None = None) -> dict:
-        ns = self._ns(namespace)
-        proposal = self.db.get_policy_proposal(namespace=ns, proposal_id=proposal_id)
+    def _policy_evaluate_sync(self, proposal_id: str, namespace: str) -> dict:
+        proposal = self.db.get_policy_proposal(namespace=namespace, proposal_id=proposal_id)
         if proposal is None:
-            raise ValueError(f"proposal '{proposal_id}' not found in namespace '{ns}'")
+            raise ValueError(f"proposal '{proposal_id}' not found in namespace '{namespace}'")
 
         eval_result = self.evaluator.evaluate(
             delta_md=proposal["delta_md"],
@@ -198,7 +224,7 @@ class MemoryPolicyService:
 
         now = utc_now_iso()
         eval_id = self.db.add_policy_evaluation(
-            namespace=ns,
+            namespace=namespace,
             proposal_id=proposal_id,
             score=eval_result["score"],
             passed=eval_result["passed"],
@@ -206,11 +232,11 @@ class MemoryPolicyService:
             checks=eval_result["checks"],
             created_at=now,
         )
-        self.db.set_proposal_status(namespace=ns, proposal_id=proposal_id, status="evaluated")
+        self.db.set_proposal_status(namespace=namespace, proposal_id=proposal_id, status="evaluated")
 
         return {
             "evaluation_id": eval_id,
-            "namespace": ns,
+            "namespace": namespace,
             "proposal_id": proposal_id,
             "score": eval_result["score"],
             "passed": eval_result["passed"],
@@ -219,6 +245,21 @@ class MemoryPolicyService:
             "regression": eval_result["regression"],
             "created_at": now,
         }
+
+    def policy_evaluate(
+        self,
+        proposal_id: str,
+        namespace: str | None = None,
+        async_mode: bool = False,
+    ) -> dict:
+        ns = self._ns(namespace)
+        if async_mode:
+            return self.jobs_submit(
+                job_type="policy.evaluate",
+                payload={"proposal_id": proposal_id},
+                namespace=ns,
+            )
+        return self._policy_evaluate_sync(proposal_id=proposal_id, namespace=ns)
 
     def policy_promote(self, proposal_id: str, namespace: str | None = None) -> dict:
         ns = self._ns(namespace)
@@ -269,3 +310,157 @@ class MemoryPolicyService:
             "is_active": active.get("is_active", True),
             "created_at": active.get("created_at"),
         }
+
+    def jobs_submit(self, job_type: str, payload: dict[str, Any], namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        normalized_job_type = job_type.strip()
+        if normalized_job_type not in SUPPORTED_JOB_TYPES:
+            raise ValueError(f"unsupported job_type '{job_type}'")
+
+        if normalized_job_type == "memory.distill":
+            session_id = str(payload.get("session_id", "")).strip()
+            if not session_id:
+                raise ValueError("payload.session_id is required")
+            normalized_payload: dict[str, Any] = {
+                "session_id": session_id,
+                "max_lines": self._coerce_positive_int(payload.get("max_lines", 6), default=6),
+            }
+        elif normalized_job_type == "policy.evaluate":
+            proposal_id = str(payload.get("proposal_id", "")).strip()
+            if not proposal_id:
+                raise ValueError("payload.proposal_id is required")
+            normalized_payload = {"proposal_id": proposal_id}
+        else:
+            raise ValueError(f"unsupported job_type '{job_type}'")
+
+        now = utc_now_iso()
+        job_id = self.db.create_job(
+            namespace=ns,
+            job_type=normalized_job_type,
+            payload=normalized_payload,
+            created_at=now,
+        )
+        return {
+            "job_id": job_id,
+            "namespace": ns,
+            "job_type": normalized_job_type,
+            "status": "queued",
+            "created_at": now,
+        }
+
+    def jobs_status(self, job_id: int, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        resolved_job_id = self._coerce_positive_int(job_id, default=-1)
+        if resolved_job_id < 1:
+            raise ValueError("job_id must be a positive integer")
+        job = self.db.get_job(namespace=ns, job_id=resolved_job_id)
+        if job is None:
+            raise ValueError(f"job '{resolved_job_id}' not found in namespace '{ns}'")
+        return {
+            "job_id": job["job_id"],
+            "namespace": job["namespace"],
+            "job_type": job["job_type"],
+            "status": job["status"],
+            "error": job["error"],
+            "created_at": job["created_at"],
+            "updated_at": job["updated_at"],
+            "started_at": job["started_at"],
+            "finished_at": job["finished_at"],
+        }
+
+    def jobs_result(self, job_id: int, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        resolved_job_id = self._coerce_positive_int(job_id, default=-1)
+        if resolved_job_id < 1:
+            raise ValueError("job_id must be a positive integer")
+        job = self.db.get_job(namespace=ns, job_id=resolved_job_id)
+        if job is None:
+            raise ValueError(f"job '{resolved_job_id}' not found in namespace '{ns}'")
+        return {
+            "job_id": job["job_id"],
+            "namespace": job["namespace"],
+            "job_type": job["job_type"],
+            "status": job["status"],
+            "result": job["result"],
+            "error": job["error"],
+            "created_at": job["created_at"],
+            "updated_at": job["updated_at"],
+            "started_at": job["started_at"],
+            "finished_at": job["finished_at"],
+        }
+
+    def jobs_run_pending(self, limit: int = 1, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        resolved_limit = self._coerce_positive_int(limit, default=1)
+        jobs: list[dict[str, Any]] = []
+
+        for _ in range(resolved_limit):
+            now = utc_now_iso()
+            job = self.db.claim_next_queued_job(namespace=ns, now=now)
+            if job is None:
+                break
+
+            job_id = int(job["job_id"])
+            job_type = str(job["job_type"])
+            try:
+                result = self._execute_job(job=job)
+                finished_at = utc_now_iso()
+                self.db.finish_job_success(
+                    namespace=ns,
+                    job_id=job_id,
+                    result=result,
+                    now=finished_at,
+                )
+                jobs.append(
+                    {
+                        "job_id": job_id,
+                        "job_type": job_type,
+                        "status": "succeeded",
+                    }
+                )
+            except Exception as exc:
+                finished_at = utc_now_iso()
+                self.db.finish_job_failure(
+                    namespace=ns,
+                    job_id=job_id,
+                    error_text=str(exc),
+                    now=finished_at,
+                )
+                jobs.append(
+                    {
+                        "job_id": job_id,
+                        "job_type": job_type,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+
+        succeeded = sum(1 for item in jobs if item["status"] == "succeeded")
+        failed = sum(1 for item in jobs if item["status"] == "failed")
+        return {
+            "namespace": ns,
+            "processed": len(jobs),
+            "succeeded": succeeded,
+            "failed": failed,
+            "jobs": jobs,
+        }
+
+    def _execute_job(self, job: dict[str, Any]) -> dict:
+        job_type = str(job["job_type"])
+        namespace = str(job["namespace"])
+        payload = dict(job["payload"])
+
+        if job_type == "memory.distill":
+            session_id = str(payload.get("session_id", "")).strip()
+            if not session_id:
+                raise ValueError("job payload missing session_id")
+            max_lines = self._coerce_positive_int(payload.get("max_lines", 6), default=6)
+            return self._distill_session_sync(session_id=session_id, max_lines=max_lines, namespace=namespace)
+
+        if job_type == "policy.evaluate":
+            proposal_id = str(payload.get("proposal_id", "")).strip()
+            if not proposal_id:
+                raise ValueError("job payload missing proposal_id")
+            return self._policy_evaluate_sync(proposal_id=proposal_id, namespace=namespace)
+
+        raise ValueError(f"unsupported job_type '{job_type}'")

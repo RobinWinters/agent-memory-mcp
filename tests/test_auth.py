@@ -60,3 +60,18 @@ def test_wildcard_scope_family_and_namespace() -> None:
 
     with pytest.raises(PermissionError):
         auth.authorize(api_key="admin", namespace="tenant-z", scope="memory:write")
+
+
+def test_jobs_scope_family() -> None:
+    auth = Authorizer.from_sources(
+        mode="api_key",
+        default_namespace="default",
+        keys_json='{"runner":{"namespaces":["tenant-a"],"scopes":["jobs:*"]}}',
+        keys_file=None,
+    )
+
+    ns = auth.authorize(api_key="runner", namespace="tenant-a", scope="jobs:run")
+    assert ns == "tenant-a"
+
+    with pytest.raises(PermissionError):
+        auth.authorize(api_key="runner", namespace="tenant-a", scope="policy:read")
