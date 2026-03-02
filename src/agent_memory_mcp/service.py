@@ -8,6 +8,7 @@ from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import Embedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
 from agent_memory_mcp.models import utc_now_iso
+from agent_memory_mcp.vector_store import MemoryVectorStore
 
 BASELINE_POLICY = textwrap.dedent(
     """
@@ -31,6 +32,7 @@ class MemoryPolicyService:
     db: Database
     embedder: Embedder
     evaluator: PolicyEvaluator
+    vector_store: MemoryVectorStore
     default_namespace: str = "default"
 
     def _ns(self, namespace: str | None) -> str:
@@ -84,18 +86,27 @@ class MemoryPolicyService:
 
         now = utc_now_iso()
         embedding = self.embedder.embed(summary)
+        metadata = {
+            "kind": "session_distill",
+            "event_count": len(events),
+            "embedding_backend": self.embedder.backend_name,
+            "embedding_dimensions": len(embedding),
+            "vector_store_backend": self.vector_store.backend_name,
+        }
         memory_id = self.db.insert_memory(
             namespace=ns,
             session_id=session_id,
             content=summary,
             embedding=embedding,
             created_at=now,
-            metadata={
-                "kind": "session_distill",
-                "event_count": len(events),
-                "embedding_backend": self.embedder.backend_name,
-                "embedding_dimensions": len(embedding),
-            },
+            metadata=metadata,
+        )
+        self.vector_store.upsert(
+            memory_id=memory_id,
+            namespace=ns,
+            session_id=session_id,
+            vector=embedding,
+            metadata=metadata,
         )
 
         return {
@@ -106,39 +117,33 @@ class MemoryPolicyService:
             "created_at": now,
         }
 
-    @staticmethod
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        if not a or not b or len(a) != len(b):
-            return 0.0
-        return sum(x * y for x, y in zip(a, b, strict=True))
-
     def memory_search(self, query: str, k: int = 5, namespace: str | None = None) -> list[dict]:
         ns = self._ns(namespace)
-        memories = self.db.list_memories(namespace=ns)
-        if not memories:
+        query_vector = self.embedder.embed(query)
+        hits = self.vector_store.search(namespace=ns, query_vector=query_vector, k=k)
+        if not hits:
             return []
 
-        qvec = self.embedder.embed(query)
-        scored = []
-        for memory in memories:
-            if len(memory["embedding"]) != len(qvec):
-                continue
-            score = self._cosine_similarity(qvec, memory["embedding"])
-            scored.append((score, memory))
-        scored.sort(key=lambda item: item[0], reverse=True)
+        ids = [hit.memory_id for hit in hits]
+        memories = self.db.get_memories_by_ids(namespace=ns, memory_ids=ids)
+        by_id = {int(memory["id"]): memory for memory in memories}
 
-        top = scored[: max(k, 1)]
-        return [
-            {
-                "memory_id": memory["id"],
-                "namespace": ns,
-                "session_id": memory["session_id"],
-                "score": round(score, 4),
-                "content": memory["content"],
-                "metadata": memory["metadata"],
-            }
-            for score, memory in top
-        ]
+        results: list[dict] = []
+        for hit in hits:
+            memory = by_id.get(hit.memory_id)
+            if memory is None:
+                continue
+            results.append(
+                {
+                    "memory_id": memory["id"],
+                    "namespace": ns,
+                    "session_id": memory["session_id"],
+                    "score": round(hit.score, 4),
+                    "content": memory["content"],
+                    "metadata": memory["metadata"],
+                }
+            )
+        return results
 
     def policy_get(self, namespace: str | None = None) -> dict:
         ns = self._ns(namespace)

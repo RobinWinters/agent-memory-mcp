@@ -6,6 +6,7 @@ from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import HashEmbedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
 from agent_memory_mcp.service import MemoryPolicyService
+from agent_memory_mcp.vector_store import LocalMemoryVectorStore
 
 
 def make_service(tmp_path: Path) -> MemoryPolicyService:
@@ -15,6 +16,7 @@ def make_service(tmp_path: Path) -> MemoryPolicyService:
         db=db,
         embedder=HashEmbedder(dimensions=128),
         evaluator=PolicyEvaluator(pass_threshold=0.7),
+        vector_store=LocalMemoryVectorStore(db=db),
         default_namespace="default",
     )
 

@@ -228,6 +228,38 @@ class Database:
             for row in rows
         ]
 
+    def get_memories_by_ids(self, namespace: str, memory_ids: list[int]) -> list[dict[str, Any]]:
+        if not memory_ids:
+            return []
+        placeholders = ",".join("?" for _ in memory_ids)
+        params: list[Any] = [namespace, *memory_ids]
+        rows = self.conn.execute(
+            f"""
+            SELECT id, namespace, session_id, content, embedding_json, created_at, metadata_json
+            FROM memories
+            WHERE namespace=? AND id IN ({placeholders})
+            """,
+            params,
+        ).fetchall()
+        by_id: dict[int, dict[str, Any]] = {
+            int(row["id"]): {
+                "id": row["id"],
+                "namespace": row["namespace"],
+                "session_id": row["session_id"],
+                "content": row["content"],
+                "embedding": json.loads(row["embedding_json"]),
+                "created_at": row["created_at"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        }
+        ordered: list[dict[str, Any]] = []
+        for memory_id in memory_ids:
+            item = by_id.get(int(memory_id))
+            if item is not None:
+                ordered.append(item)
+        return ordered
+
     def create_policy_proposal(
         self,
         namespace: str,
