@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-memory-mcp"
-version = "0.5.0"
+version = "0.6.0"
 description = "MCP server for agent memory and policy self-improvement workflows"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,3 +28,4 @@ where = ["src"]
 
 [project.scripts]
 agent-memory-mcp = "agent_memory_mcp.server:main"
+agent-memory-worker = "agent_memory_mcp.worker:main"

@@ -3,7 +3,7 @@
 MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, and durable async jobs.
 
-## Current build status (v0.5.0)
+## Current build status (v0.6.0)
 
 Implemented:
 
@@ -20,6 +20,12 @@ Implemented:
   - `propose` -> `evaluate` -> `promote` -> `rollback`
 - API-key auth + ACL scopes.
 - Durable async jobs for `memory.distill` and `policy.evaluate`.
+- Background worker daemon for automatic job processing.
+
+## Binaries
+
+- `agent-memory-mcp`: MCP server (stdio)
+- `agent-memory-worker`: background queue worker
 
 ## MCP tools
 
@@ -58,6 +64,11 @@ Vector backend:
 - `QDRANT_TIMEOUT_SECONDS` (default: `10`)
 - `QDRANT_AUTO_CREATE_COLLECTION` (`true`/`false`, default: `true`)
 
+Worker:
+- `AGENT_MEMORY_WORKER_POLL_SECONDS` (default: `1.0`)
+- `AGENT_MEMORY_WORKER_BATCH_SIZE` (default: `20`)
+- `AGENT_MEMORY_WORKER_NAMESPACES` (comma-separated list, default: `AGENT_MEMORY_NAMESPACE`)
+
 Auth:
 - `AGENT_MEMORY_AUTH_MODE` (`off` or `api_key`, default: `off`)
 - `AGENT_MEMORY_API_KEYS_JSON` (inline key-policy JSON)
@@ -67,21 +78,6 @@ Auth scope families:
 - `memory:*`
 - `policy:*`
 - `jobs:*`
-
-`AGENT_MEMORY_API_KEYS_JSON` / file format:
-
-```json
-{
-  "key_admin": {
-    "namespaces": ["*"],
-    "scopes": ["*"]
-  },
-  "key_runner": {
-    "namespaces": ["tenant-a"],
-    "scopes": ["memory:read", "memory:write", "policy:*", "jobs:*"]
-  }
-}
-```
 
 ## Quickstart
 
@@ -93,20 +89,21 @@ pip install ".[dev]"
 pytest -q
 ```
 
-Run server:
+Run MCP server:
 
 ```bash
 source .venv/bin/activate
 agent-memory-mcp
 ```
 
-## Async job flow
+Run worker daemon:
 
-Example (`memory.distill` async):
+```bash
+source .venv/bin/activate
+agent-memory-worker
+```
 
-1. Call `memory.distill(..., async_mode=true)`.
-2. Call `jobs.run_pending(limit=1)`.
-3. Poll `jobs.status(job_id)` and read `jobs.result(job_id)`.
+Run server + worker together (two terminals) for automatic async processing.
 
 ## Qdrant setup
 
@@ -116,7 +113,7 @@ Start Qdrant locally:
 docker run -p 6333:6333 qdrant/qdrant
 ```
 
-Run server with Qdrant backend:
+Run with Qdrant backend:
 
 ```bash
 export AGENT_MEMORY_VECTOR_BACKEND=qdrant
@@ -125,24 +122,29 @@ export QDRANT_COLLECTION=agent_memory
 agent-memory-mcp
 ```
 
-Qdrant is used for vector lookup while SQLite remains canonical storage for full memory records.
+Qdrant handles vector lookup while SQLite remains canonical source for memory/policy/job records.
 
-## Regression testing cadence
-
-Recommended while iterating:
+## Test cadence
 
 ```bash
 source .venv/bin/activate
 pytest tests/test_service.py -q
 pytest tests/test_jobs.py -q
+pytest tests/test_worker.py -q
 pytest -q
 ```
+
+## Next phase
+
+1. Reliability hardening (retry/backoff/dead-letter + stuck-job recovery).
+2. Observability (queue depth, latency, failure metrics).
+3. Policy artifact signing + tamper-evident audit logs.
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.5.0: async job queue and MCP job tools"
+git commit -m "Build out v0.6.0: worker daemon for async jobs"
 git push
 ```

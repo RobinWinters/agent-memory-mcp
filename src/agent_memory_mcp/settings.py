@@ -21,6 +21,9 @@ class Settings:
     qdrant_collection: str
     qdrant_timeout_seconds: float
     qdrant_auto_create_collection: bool
+    worker_poll_seconds: float
+    worker_batch_size: int
+    worker_namespaces: tuple[str, ...]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -50,6 +53,9 @@ class Settings:
         qdrant_collection = os.getenv("QDRANT_COLLECTION", "agent_memory")
         qdrant_timeout_raw = os.getenv("QDRANT_TIMEOUT_SECONDS", "10")
         qdrant_auto_create = parse_bool(os.getenv("QDRANT_AUTO_CREATE_COLLECTION"), default=True)
+        worker_poll_raw = os.getenv("AGENT_MEMORY_WORKER_POLL_SECONDS", "1.0")
+        worker_batch_raw = os.getenv("AGENT_MEMORY_WORKER_BATCH_SIZE", "20")
+        worker_namespaces_raw = os.getenv("AGENT_MEMORY_WORKER_NAMESPACES")
 
         try:
             threshold = float(threshold_raw)
@@ -59,9 +65,25 @@ class Settings:
             qdrant_timeout_seconds = float(qdrant_timeout_raw)
         except ValueError:
             qdrant_timeout_seconds = 10.0
+        try:
+            worker_poll_seconds = float(worker_poll_raw)
+        except ValueError:
+            worker_poll_seconds = 1.0
+        try:
+            worker_batch_size = int(worker_batch_raw)
+        except ValueError:
+            worker_batch_size = 20
 
         threshold = max(0.0, min(1.0, threshold))
         qdrant_timeout_seconds = max(0.5, qdrant_timeout_seconds)
+        worker_poll_seconds = max(0.1, worker_poll_seconds)
+        worker_batch_size = max(1, worker_batch_size)
+
+        if worker_namespaces_raw:
+            parsed = [part.strip() for part in worker_namespaces_raw.split(",") if part.strip()]
+            worker_namespaces = tuple(parsed) if parsed else (default_namespace,)
+        else:
+            worker_namespaces = (default_namespace,)
 
         return cls(
             db_path=db_path,
@@ -79,4 +101,7 @@ class Settings:
             qdrant_collection=qdrant_collection,
             qdrant_timeout_seconds=qdrant_timeout_seconds,
             qdrant_auto_create_collection=qdrant_auto_create,
+            worker_poll_seconds=worker_poll_seconds,
+            worker_batch_size=worker_batch_size,
+            worker_namespaces=worker_namespaces,
         )
