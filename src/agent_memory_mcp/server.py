@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 from agent_memory_mcp.auth import Authorizer
 from agent_memory_mcp.factory import build_service
+from agent_memory_mcp.keyring import FileKeyring
 from agent_memory_mcp.service import MemoryPolicyService
 from agent_memory_mcp.settings import Settings
 
@@ -14,6 +15,8 @@ mcp = FastMCP("agent-memory-mcp")
 _settings_singleton: Settings | None = None
 _service_singleton: MemoryPolicyService | None = None
 _authorizer_singleton: Authorizer | None = None
+_keyring_singleton: FileKeyring | None = None
+_keyring_mtime_ns: int | None = None
 
 
 def get_settings() -> Settings:
@@ -23,16 +26,104 @@ def get_settings() -> Settings:
     return _settings_singleton
 
 
-def get_authorizer() -> Authorizer:
+def get_keyring() -> FileKeyring | None:
+    global _keyring_singleton
+    settings = get_settings()
+    if not settings.keyring_file:
+        return None
+    if _keyring_singleton is None or str(_keyring_singleton.path) != settings.keyring_file:
+        _keyring_singleton = FileKeyring(settings.keyring_file)
+    return _keyring_singleton
+
+
+def require_keyring() -> FileKeyring:
+    keyring = get_keyring()
+    if keyring is None:
+        raise ValueError("keyring is not configured; set AGENT_MEMORY_KEYRING_FILE")
+    keyring.ensure_exists()
+    return keyring
+
+
+def _build_env_authorizer(settings: Settings) -> Authorizer:
+    return Authorizer.from_sources(
+        mode=settings.auth_mode,
+        default_namespace=settings.default_namespace,
+        keys_json=settings.auth_api_keys_json,
+        keys_file=settings.auth_api_keys_file,
+    )
+
+
+def _apply_runtime_security(force: bool = False) -> dict[str, Any]:
     global _authorizer_singleton
-    if _authorizer_singleton is None:
-        settings = get_settings()
-        _authorizer_singleton = Authorizer.from_sources(
+    global _keyring_mtime_ns
+
+    settings = get_settings()
+    keyring = get_keyring()
+
+    if keyring is None:
+        should_reload = force or _authorizer_singleton is None or _keyring_mtime_ns != -1
+        if should_reload:
+            _authorizer_singleton = _build_env_authorizer(settings)
+        _keyring_mtime_ns = -1
+        if should_reload and _service_singleton is not None:
+            policy_secret = settings.policy_signing_secret
+            audit_secret = settings.audit_signing_secret
+            _service_singleton.update_signing_keys(
+                policy_active_secret=policy_secret,
+                audit_active_secret=audit_secret,
+                policy_verification_secrets=((policy_secret,) if policy_secret else ()),
+                audit_verification_secrets=((audit_secret,) if audit_secret else ()),
+            )
+        return {"reloaded": should_reload, "source": "env"}
+
+    keyring.ensure_exists()
+    current_mtime = keyring.mtime_ns()
+    should_reload = force or _authorizer_singleton is None or current_mtime != _keyring_mtime_ns
+    if not should_reload:
+        return {"reloaded": False, "source": "keyring"}
+
+    raw_policies = keyring.get_auth_raw_policies()
+    if raw_policies:
+        _authorizer_singleton = Authorizer.from_raw_policies(
             mode=settings.auth_mode,
             default_namespace=settings.default_namespace,
-            keys_json=settings.auth_api_keys_json,
-            keys_file=settings.auth_api_keys_file,
+            raw_policies=raw_policies,
         )
+        auth_source = "keyring"
+    else:
+        _authorizer_singleton = _build_env_authorizer(settings)
+        auth_source = "env"
+
+    policy_active_secret, policy_verification_secrets = keyring.get_signing_material(
+        purpose="policy",
+        fallback_secret=settings.policy_signing_secret,
+    )
+    audit_active_secret, audit_verification_secrets = keyring.get_signing_material(
+        purpose="audit",
+        fallback_secret=settings.audit_signing_secret or settings.policy_signing_secret,
+    )
+    if _service_singleton is not None:
+        _service_singleton.update_signing_keys(
+            policy_active_secret=policy_active_secret,
+            audit_active_secret=audit_active_secret,
+            policy_verification_secrets=policy_verification_secrets,
+            audit_verification_secrets=audit_verification_secrets,
+        )
+
+    _keyring_mtime_ns = keyring.mtime_ns()
+    return {
+        "reloaded": True,
+        "source": "keyring",
+        "auth_source": auth_source,
+        "keyring_mtime_ns": _keyring_mtime_ns,
+    }
+
+
+def get_authorizer() -> Authorizer:
+    _apply_runtime_security(force=False)
+    global _authorizer_singleton
+    if _authorizer_singleton is None:
+        _authorizer_singleton = _build_env_authorizer(get_settings())
     return _authorizer_singleton
 
 
@@ -41,10 +132,12 @@ def get_service() -> MemoryPolicyService:
     if _service_singleton is None:
         settings = get_settings()
         _service_singleton = build_service(settings=settings)
+    _apply_runtime_security(force=False)
     return _service_singleton
 
 
 def authorize(namespace: str | None, scope: str, api_key: str | None) -> str:
+    _apply_runtime_security(force=False)
     return get_authorizer().authorize(api_key=api_key, namespace=namespace, scope=scope)
 
 
@@ -268,6 +361,119 @@ def ops_audit_verify(
     """Verify audit hash-chain continuity and policy artifact signatures."""
     resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
     return get_service().ops_audit_verify(limit=limit, namespace=resolved_ns)
+
+
+@mcp.tool(name="ops.keyring_status")
+def ops_keyring_status(
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Return keyring status (without exposing stored signing secrets)."""
+    _ = authorize(namespace=namespace, scope="security:read", api_key=api_key)
+    keyring = get_keyring()
+    if keyring is None:
+        return {
+            "enabled": False,
+            "message": "Set AGENT_MEMORY_KEYRING_FILE to enable keyring management.",
+        }
+
+    keyring.ensure_exists()
+    runtime = _apply_runtime_security(force=False)
+    status = keyring.status()
+    status["enabled"] = True
+    status["runtime"] = runtime
+    return status
+
+
+@mcp.tool(name="ops.keyring_reload")
+def ops_keyring_reload(
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Force reload security runtime state from keyring file."""
+    _ = authorize(namespace=namespace, scope="security:read", api_key=api_key)
+    keyring = require_keyring()
+    runtime = _apply_runtime_security(force=True)
+    return {
+        "enabled": True,
+        "keyring_path": str(keyring.path),
+        "runtime": runtime,
+    }
+
+
+@mcp.tool(name="ops.keyring_rotate")
+def ops_keyring_rotate(
+    purpose: str,
+    secret: str | None = None,
+    key_id: str | None = None,
+    disable_previous: bool = False,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Rotate active signing key for policy or audit channel."""
+    _ = authorize(namespace=namespace, scope="security:manage", api_key=api_key)
+    keyring = require_keyring()
+    rotated = keyring.rotate_signing_key(
+        purpose=purpose,
+        secret=secret,
+        key_id=key_id,
+        disable_previous=disable_previous,
+    )
+    runtime = _apply_runtime_security(force=True)
+    return {
+        "enabled": True,
+        "keyring_path": str(keyring.path),
+        "rotation": rotated,
+        "runtime": runtime,
+    }
+
+
+@mcp.tool(name="ops.keyring_upsert_api_key")
+def ops_keyring_upsert_api_key(
+    managed_api_key: str,
+    namespaces: list[str],
+    scopes: list[str],
+    enabled: bool = True,
+    label: str | None = None,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Upsert an API key policy in keyring auth map and reload authorizer."""
+    _ = authorize(namespace=namespace, scope="security:manage", api_key=api_key)
+    keyring = require_keyring()
+    updated = keyring.upsert_api_key(
+        api_key=managed_api_key,
+        namespaces=namespaces,
+        scopes=scopes,
+        enabled=enabled,
+        label=label,
+    )
+    runtime = _apply_runtime_security(force=True)
+    return {
+        "enabled": True,
+        "keyring_path": str(keyring.path),
+        "api_key_policy": updated,
+        "runtime": runtime,
+    }
+
+
+@mcp.tool(name="ops.keyring_disable_api_key")
+def ops_keyring_disable_api_key(
+    managed_api_key: str,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Disable an API key policy in keyring auth map and reload authorizer."""
+    _ = authorize(namespace=namespace, scope="security:manage", api_key=api_key)
+    keyring = require_keyring()
+    updated = keyring.disable_api_key(api_key=managed_api_key)
+    runtime = _apply_runtime_security(force=True)
+    return {
+        "enabled": True,
+        "keyring_path": str(keyring.path),
+        "api_key_policy": updated,
+        "runtime": runtime,
+    }
 
 
 def main() -> None:

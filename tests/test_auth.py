@@ -75,3 +75,35 @@ def test_jobs_scope_family() -> None:
 
     with pytest.raises(PermissionError):
         auth.authorize(api_key="runner", namespace="tenant-a", scope="policy:read")
+
+
+def test_keyring_payload_format_and_enabled_flag() -> None:
+    auth = Authorizer.from_sources(
+        mode="api_key",
+        default_namespace="default",
+        keys_json="""
+        {
+          "auth": {
+            "api_keys": {
+              "live-key": {
+                "namespaces": ["tenant-a"],
+                "scopes": ["security:read"],
+                "enabled": true
+              },
+              "disabled-key": {
+                "namespaces": ["tenant-a"],
+                "scopes": ["security:manage"],
+                "enabled": false
+              }
+            }
+          }
+        }
+        """,
+        keys_file=None,
+    )
+
+    ns = auth.authorize(api_key="live-key", namespace="tenant-a", scope="security:read")
+    assert ns == "tenant-a"
+
+    with pytest.raises(PermissionError):
+        auth.authorize(api_key="disabled-key", namespace="tenant-a", scope="security:manage")

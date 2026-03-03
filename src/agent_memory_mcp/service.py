@@ -50,6 +50,8 @@ class MemoryPolicyService:
     job_running_timeout_seconds: float = 300.0
     policy_signing_secret: str | None = None
     audit_signing_secret: str | None = None
+    policy_verification_secrets: tuple[str, ...] = ()
+    audit_verification_secrets: tuple[str, ...] = ()
 
     def _ns(self, namespace: str | None) -> str:
         if namespace and namespace.strip():
@@ -71,6 +73,43 @@ class MemoryPolicyService:
         except (TypeError, ValueError):
             parsed = default
         return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _dedupe_secrets(values: list[str]) -> tuple[str, ...]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            clean = value.strip()
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            ordered.append(clean)
+        return tuple(ordered)
+
+    def _resolve_policy_verification_secrets(self) -> tuple[str, ...]:
+        candidates = list(self.policy_verification_secrets)
+        if self.policy_signing_secret:
+            candidates.append(self.policy_signing_secret)
+        return self._dedupe_secrets(candidates)
+
+    def _resolve_audit_verification_secrets(self) -> tuple[str, ...]:
+        candidates = list(self.audit_verification_secrets)
+        if self.audit_signing_secret:
+            candidates.append(self.audit_signing_secret)
+        return self._dedupe_secrets(candidates)
+
+    def update_signing_keys(
+        self,
+        *,
+        policy_active_secret: str | None,
+        audit_active_secret: str | None,
+        policy_verification_secrets: tuple[str, ...] = (),
+        audit_verification_secrets: tuple[str, ...] = (),
+    ) -> None:
+        self.policy_signing_secret = policy_active_secret
+        self.audit_signing_secret = audit_active_secret
+        self.policy_verification_secrets = self._dedupe_secrets(list(policy_verification_secrets))
+        self.audit_verification_secrets = self._dedupe_secrets(list(audit_verification_secrets))
 
     def _append_audit_event(
         self,
@@ -601,21 +640,38 @@ class MemoryPolicyService:
         ns = self._ns(namespace)
         resolved_limit = self._coerce_positive_int(limit, default=1000)
         entries = self.db.list_audit_logs(namespace=ns, limit=resolved_limit, ascending=True)
+        audit_secrets = self._resolve_audit_verification_secrets()
 
         failures: list[dict[str, Any]] = []
         prev_event_hash: str | None = None
         for entry in entries:
-            expected_hash = compute_audit_event_hash(
-                namespace=ns,
-                event_type=str(entry["event_type"]),
-                entity_type=str(entry["entity_type"]),
-                entity_id=str(entry["entity_id"]),
-                payload=dict(entry["payload"]),
-                created_at=str(entry["created_at"]),
-                prev_hash=str(entry["prev_hash"]),
-                audit_secret=self.audit_signing_secret,
-            )
-            if expected_hash != str(entry["event_hash"]):
+            expected_hashes = [
+                compute_audit_event_hash(
+                    namespace=ns,
+                    event_type=str(entry["event_type"]),
+                    entity_type=str(entry["entity_type"]),
+                    entity_id=str(entry["entity_id"]),
+                    payload=dict(entry["payload"]),
+                    created_at=str(entry["created_at"]),
+                    prev_hash=str(entry["prev_hash"]),
+                    audit_secret=secret,
+                )
+                for secret in audit_secrets
+            ]
+            if not audit_secrets:
+                expected_hashes = [
+                    compute_audit_event_hash(
+                        namespace=ns,
+                        event_type=str(entry["event_type"]),
+                        entity_type=str(entry["entity_type"]),
+                        entity_id=str(entry["entity_id"]),
+                        payload=dict(entry["payload"]),
+                        created_at=str(entry["created_at"]),
+                        prev_hash=str(entry["prev_hash"]),
+                        audit_secret=None,
+                    )
+                ]
+            if str(entry["event_hash"]) not in expected_hashes:
                 failures.append(
                     {
                         "id": entry["id"],
@@ -634,6 +690,7 @@ class MemoryPolicyService:
 
         versions = self.db.list_policy_versions(namespace=ns, limit=resolved_limit)
         bad_versions: list[str] = []
+        policy_secrets = self._resolve_policy_verification_secrets()
         for version in versions:
             ok = verify_policy_artifact(
                 namespace=ns,
@@ -644,6 +701,7 @@ class MemoryPolicyService:
                 signature=version["signature"],
                 signing_method=str(version["signing_method"]),
                 signing_secret=self.policy_signing_secret,
+                signing_secrets=policy_secrets,
             )
             if not ok:
                 bad_versions.append(str(version["version_id"]))

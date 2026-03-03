@@ -30,6 +30,7 @@ class Settings:
     job_running_timeout_seconds: float
     policy_signing_secret: str | None
     audit_signing_secret: str | None
+    keyring_file: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -68,6 +69,7 @@ class Settings:
         job_running_timeout_raw = os.getenv("AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS", "300.0")
         policy_signing_secret = os.getenv("AGENT_MEMORY_POLICY_SIGNING_SECRET")
         audit_signing_secret = os.getenv("AGENT_MEMORY_AUDIT_SIGNING_SECRET")
+        keyring_file = os.getenv("AGENT_MEMORY_KEYRING_FILE")
 
         try:
             threshold = float(threshold_raw)
@@ -145,4 +147,5 @@ class Settings:
             job_running_timeout_seconds=job_running_timeout_seconds,
             policy_signing_secret=policy_signing_secret,
             audit_signing_secret=audit_signing_secret,
+            keyring_file=keyring_file,
         )

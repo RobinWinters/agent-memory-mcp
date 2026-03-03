@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -33,11 +34,15 @@ class Authorizer:
         keys_json: str | None,
         keys_file: str | None,
     ) -> "Authorizer":
-        policies = cls._load_policies(keys_json=keys_json, keys_file=keys_file)
-        return cls(mode=mode, default_namespace=default_namespace, policies=policies)
+        raw = cls._load_raw_policies(keys_json=keys_json, keys_file=keys_file)
+        return cls.from_raw_policies(
+            mode=mode,
+            default_namespace=default_namespace,
+            raw_policies=raw,
+        )
 
     @staticmethod
-    def _load_policies(keys_json: str | None, keys_file: str | None) -> dict[str, KeyPolicy]:
+    def _load_raw_policies(keys_json: str | None, keys_file: str | None) -> dict[str, Any]:
         raw: dict[str, dict] = {}
 
         if keys_file:
@@ -46,8 +51,42 @@ class Authorizer:
         elif keys_json:
             raw = json.loads(keys_json)
 
+        if not isinstance(raw, dict):
+            return {}
+        return raw
+
+    @classmethod
+    def from_raw_policies(
+        cls,
+        *,
+        mode: str,
+        default_namespace: str,
+        raw_policies: dict[str, Any],
+    ) -> "Authorizer":
+        policies = cls._parse_policies(raw_policies=raw_policies)
+        return cls(mode=mode, default_namespace=default_namespace, policies=policies)
+
+    @staticmethod
+    def _parse_policies(raw_policies: dict[str, Any]) -> dict[str, KeyPolicy]:
+        if not isinstance(raw_policies, dict):
+            return {}
+
+        policy_map: dict[str, Any]
+        auth_block = raw_policies.get("auth")
+        if isinstance(auth_block, dict) and isinstance(auth_block.get("api_keys"), dict):
+            policy_map = auth_block["api_keys"]
+        elif isinstance(raw_policies.get("api_keys"), dict):
+            policy_map = raw_policies["api_keys"]
+        else:
+            policy_map = raw_policies
+
         policies: dict[str, KeyPolicy] = {}
-        for api_key, config in raw.items():
+        for api_key, config in policy_map.items():
+            if not isinstance(api_key, str) or not isinstance(config, dict):
+                continue
+            enabled = bool(config.get("enabled", True))
+            if not enabled:
+                continue
             namespaces = {str(item) for item in config.get("namespaces", ["default"])}
             scopes = {str(item) for item in config.get("scopes", [])}
             policies[api_key] = KeyPolicy(namespaces=namespaces, scopes=scopes)

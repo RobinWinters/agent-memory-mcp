@@ -84,3 +84,44 @@ def test_policy_content_tampering_is_detected(tmp_path: Path) -> None:
     verify = svc.ops_audit_verify(limit=100)
     assert verify["verified"] is False
     assert active["version_id"] in verify["invalid_policy_versions"]
+
+
+def test_rotation_preserves_verification_with_old_and_new_secrets(tmp_path: Path) -> None:
+    svc = make_service(tmp_path, signing_secret="secret-v1")
+    svc.policy_get()
+
+    proposal_1 = svc.policy_propose(
+        delta_md="""
+        ## Delta V1
+        - Keep explicit integrity checks.
+        - Keep regression gate hard.
+        - Keep rollback path available.
+        """,
+        evidence_refs=["memory:1", "session:s1"],
+    )
+    eval_1 = svc.policy_evaluate(proposal_1["proposal_id"])
+    assert eval_1["passed"] is True
+    svc.policy_promote(proposal_1["proposal_id"])
+
+    svc.update_signing_keys(
+        policy_active_secret="secret-v2",
+        audit_active_secret="secret-v2",
+        policy_verification_secrets=("secret-v1", "secret-v2"),
+        audit_verification_secrets=("secret-v1", "secret-v2"),
+    )
+
+    proposal_2 = svc.policy_propose(
+        delta_md="""
+        ## Delta V2
+        - Rotate signing key while keeping historical verification valid.
+        - Ensure audit chain checks all enabled secrets.
+        - Keep policy promotion gated by evaluation.
+        """,
+        evidence_refs=["memory:2", "session:s2"],
+    )
+    eval_2 = svc.policy_evaluate(proposal_2["proposal_id"])
+    assert eval_2["passed"] is True
+    svc.policy_promote(proposal_2["proposal_id"])
+
+    verify = svc.ops_audit_verify(limit=500)
+    assert verify["verified"] is True

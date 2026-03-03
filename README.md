@@ -4,7 +4,7 @@ MCP server for agent memory + policy self-improvement workflows with namespace p
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
 background workers, observability, integrity verification, and export adapters.
 
-## Current build status (v0.10.0)
+## Current build status (v0.11.0)
 
 Implemented:
 
@@ -34,6 +34,10 @@ Implemented:
 - Metrics export adapters:
   - Prometheus exposition text
   - OpenTelemetry-style JSON payload
+- Keyring-based security management:
+  - file-backed signing key rotation (`policy`/`audit`)
+  - auth API-key upsert/disable management
+  - runtime hot-reload into MCP server auth/signing state
 
 ## Binaries
 
@@ -60,6 +64,11 @@ Implemented:
 - `ops.metrics_otel(window_minutes=60, namespace?, api_key?)`
 - `ops.audit_recent(limit=50, namespace?, api_key?)`
 - `ops.audit_verify(limit=1000, namespace?, api_key?)`
+- `ops.keyring_status(namespace?, api_key?)`
+- `ops.keyring_reload(namespace?, api_key?)`
+- `ops.keyring_rotate(purpose, secret?, key_id?, disable_previous=false, namespace?, api_key?)`
+- `ops.keyring_upsert_api_key(managed_api_key, namespaces, scopes, enabled=true, label?, namespace?, api_key?)`
+- `ops.keyring_disable_api_key(managed_api_key, namespace?, api_key?)`
 
 Supported `job_type` values:
 - `memory.distill`
@@ -110,6 +119,7 @@ Job reliability:
 Integrity:
 - `AGENT_MEMORY_POLICY_SIGNING_SECRET` (optional HMAC secret for policy signatures)
 - `AGENT_MEMORY_AUDIT_SIGNING_SECRET` (optional HMAC secret for audit chain; defaults to policy secret)
+- `AGENT_MEMORY_KEYRING_FILE` (optional JSON keyring path for runtime signing/auth key management)
 
 Auth:
 - `AGENT_MEMORY_AUTH_MODE` (`off` or `api_key`, default: `off`)
@@ -120,8 +130,10 @@ Auth scope families:
 - `memory:*`
 - `policy:*`
 - `jobs:*`
+- `security:*`
 
 `ops.*` tools use `jobs:read` scope.
+`ops.keyring_*` tools use `security:read`/`security:manage` scopes.
 
 ## Quickstart
 
@@ -180,6 +192,21 @@ OTel-style JSON via MCP:
 1. Call `ops.metrics_otel(window_minutes=60)`.
 2. Forward returned `payload` into your telemetry pipeline adapter.
 
+## Keyring quickstart
+
+Enable file-backed key management:
+
+```bash
+export AGENT_MEMORY_KEYRING_FILE=<repo-root>/data/keyring.json
+agent-memory-mcp
+```
+
+Then manage keys through MCP:
+
+1. `ops.keyring_status()` to inspect current state.
+2. `ops.keyring_rotate(purpose="policy")` to rotate policy signing.
+3. `ops.keyring_upsert_api_key(...)` / `ops.keyring_disable_api_key(...)` to manage auth keys.
+
 ## Test cadence
 
 ```bash
@@ -190,19 +217,20 @@ pytest tests/test_worker.py -q
 pytest tests/test_observability.py -q
 pytest tests/test_integrity.py -q
 pytest tests/test_metrics_export.py -q
+pytest tests/test_keyring.py -q
 pytest -q
 ```
 
 ## Next phase
 
-1. Key rotation/management tooling for signing and auth secrets.
-2. Optional HTTP metrics endpoint bridge for direct Prometheus scraping.
+1. Optional HTTP metrics endpoint bridge for direct Prometheus scraping.
+2. Add role-separated auth presets (`admin`, `writer`, `reader`) bootstrap helper.
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.10.0: metrics export adapters"
+git commit -m "Build out v0.11.0: keyring rotation and security ops tools"
 git push
 ```

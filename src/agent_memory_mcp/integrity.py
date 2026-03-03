@@ -52,6 +52,7 @@ def verify_policy_artifact(
     signature: str | None,
     signing_method: str,
     signing_secret: str | None,
+    signing_secrets: tuple[str, ...] | None = None,
 ) -> bool:
     if sha256_hex(content_md) != content_sha256:
         return False
@@ -59,18 +60,28 @@ def verify_policy_artifact(
     if signing_method == "none":
         return True
 
-    if signing_method != "hmac-sha256" or not signing_secret or not signature:
+    if signing_method != "hmac-sha256" or not signature:
         return False
 
-    expected = build_policy_artifact(
-        namespace=namespace,
-        version_id=version_id,
-        content_md=content_md,
-        created_at=created_at,
-        signing_secret=signing_secret,
-    )
-    expected_sig = str(expected["signature"] or "")
-    return hmac.compare_digest(expected_sig, signature)
+    candidate_secrets: list[str] = []
+    if signing_secret:
+        candidate_secrets.append(signing_secret)
+    if signing_secrets:
+        candidate_secrets.extend(signing_secrets)
+
+    for candidate in candidate_secrets:
+        expected = build_policy_artifact(
+            namespace=namespace,
+            version_id=version_id,
+            content_md=content_md,
+            created_at=created_at,
+            signing_secret=candidate,
+        )
+        expected_sig = str(expected["signature"] or "")
+        if hmac.compare_digest(expected_sig, signature):
+            return True
+
+    return False
 
 
 def compute_audit_event_hash(
