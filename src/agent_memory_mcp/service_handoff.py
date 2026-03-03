@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import uuid
 from typing import Any
 
@@ -8,6 +11,65 @@ from agent_memory_mcp.models import utc_now_iso
 
 
 class ServiceHandoffMixin:
+    @staticmethod
+    def _handoff_canonical_payload(payload: dict[str, Any]) -> str:
+        canonical_source = dict(payload)
+        canonical_source.pop("signature", None)
+        return json.dumps(canonical_source, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+    def _handoff_sign(self, payload: dict[str, Any], *, signed_at: str) -> dict[str, Any]:
+        secret = (self.policy_signing_secret or "").strip()
+        if not secret:
+            raise ValueError("handoff signing requested but no policy signing secret is configured")
+
+        canonical = self._handoff_canonical_payload(payload)
+        content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        signature = hmac.new(
+            secret.encode("utf-8"),
+            canonical.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return {
+            "signing_method": "hmac-sha256",
+            "content_sha256": content_sha256,
+            "signature": signature,
+            "signed_at": signed_at,
+        }
+
+    def _handoff_verify(self, payload: dict[str, Any]) -> None:
+        signature_payload = payload.get("signature")
+        if not isinstance(signature_payload, dict):
+            raise ValueError("handoff verification requested but signature block is missing")
+
+        method = str(signature_payload.get("signing_method", "")).strip()
+        if method != "hmac-sha256":
+            raise ValueError(f"unsupported handoff signing method '{method or '<missing>'}'")
+
+        provided_sha256 = str(signature_payload.get("content_sha256", "")).strip()
+        provided_signature = str(signature_payload.get("signature", "")).strip()
+        if not provided_sha256 or not provided_signature:
+            raise ValueError("handoff signature block is incomplete")
+
+        canonical = self._handoff_canonical_payload(payload)
+        expected_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(expected_sha256, provided_sha256):
+            raise ValueError("handoff content digest mismatch")
+
+        verification_secrets = self._resolve_policy_verification_secrets()
+        if not verification_secrets:
+            raise ValueError("handoff verification requested but no policy verification secret is configured")
+
+        for candidate in verification_secrets:
+            expected_signature = hmac.new(
+                candidate.encode("utf-8"),
+                canonical.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            if hmac.compare_digest(expected_signature, provided_signature):
+                return
+
+        raise ValueError("handoff signature verification failed")
+
     @staticmethod
     def _build_handoff_prompt(
         *,
@@ -61,6 +123,7 @@ class ServiceHandoffMixin:
         include_policy: bool = True,
         include_events: bool = False,
         max_events_per_session: int = 20,
+        sign: bool = False,
         namespace: str | None = None,
     ) -> dict[str, Any]:
         ns = self._ns(namespace)
@@ -148,7 +211,7 @@ class ServiceHandoffMixin:
             policy=policy_payload,
         )
 
-        return {
+        payload = {
             "schema": HANDOFF_SCHEMA_ID,
             "generated_at": now,
             "namespace": ns,
@@ -164,6 +227,8 @@ class ServiceHandoffMixin:
                 "event_count": event_count,
             },
         }
+        payload["signature"] = self._handoff_sign(payload, signed_at=now) if sign else None
+        return payload
 
     def memory_handoff_import(
         self,
@@ -172,9 +237,12 @@ class ServiceHandoffMixin:
         import_policy: bool = False,
         import_events: bool = False,
         max_events_per_session: int = 200,
+        verify: bool = False,
         namespace: str | None = None,
     ) -> dict[str, Any]:
         validate_handoff_payload(handoff)
+        if verify:
+            self._handoff_verify(handoff)
 
         ns = self._ns(namespace)
         clean_prefix = session_id_prefix.strip() or "imported"

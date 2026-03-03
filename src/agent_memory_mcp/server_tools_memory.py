@@ -70,11 +70,14 @@ def register_memory_tools(
         include_policy: bool = True,
         include_events: bool = False,
         max_events_per_session: int = 20,
+        sign: bool = False,
         namespace: str | None = None,
         api_key: str | None = None,
     ) -> dict[str, Any]:
         """Export portable memory/policy handoff payload for model-agnostic session transfer."""
         resolved_ns = authorize(namespace, "memory:read", api_key)
+        if sign:
+            _ = authorize(resolved_ns, "security:read", api_key)
         if include_policy:
             _ = authorize(resolved_ns, "policy:read", api_key)
         return get_service().memory_handoff_export(
@@ -83,6 +86,7 @@ def register_memory_tools(
             include_policy=include_policy,
             include_events=include_events,
             max_events_per_session=max_events_per_session,
+            sign=sign,
             namespace=resolved_ns,
         )
 
@@ -93,11 +97,14 @@ def register_memory_tools(
         import_policy: bool = False,
         import_events: bool = False,
         max_events_per_session: int = 200,
+        verify: bool = False,
         namespace: str | None = None,
         api_key: str | None = None,
     ) -> dict[str, Any]:
         """Import portable handoff payload into local memory/policy stores."""
         resolved_ns = authorize(namespace, "memory:write", api_key)
+        if verify:
+            _ = authorize(resolved_ns, "security:read", api_key)
         if import_policy:
             _ = authorize(resolved_ns, "policy:promote", api_key)
         return get_service().memory_handoff_import(
@@ -106,5 +113,6 @@ def register_memory_tools(
             import_policy=import_policy,
             import_events=import_events,
             max_events_per_session=max_events_per_session,
+            verify=verify,
             namespace=resolved_ns,
         )

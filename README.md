@@ -185,13 +185,13 @@ export AGENT_MEMORY_METRICS_TOKEN=your-token
 
 Export context bundle from one environment:
 
-1. Call `memory.handoff_export(include_policy=true, include_events=true)`.
+1. Call `memory.handoff_export(include_policy=true, include_events=true, sign=true)` if signing is desired.
 2. Save returned JSON and optional `prompt_md`.
 3. Transfer to another model, IDE, or deployment.
 
 Import into another environment:
 
-1. Call `memory.handoff_import(handoff=<json>, import_policy=true, import_events=true)`.
+1. Call `memory.handoff_import(handoff=<json>, import_policy=true, import_events=true, verify=true)` if signature verification is required.
 2. Continue with `memory.search` and normal `policy.*` workflow.
 
 Published JSON Schema:
@@ -207,6 +207,7 @@ agent-memory-handoff export \
   --db ./data/agent_memory.db \
   --namespace default \
   --include-events \
+  --sign \
   --output ./handoff.json \
   --prompt-output ./handoff.md \
   --pretty
@@ -217,6 +218,7 @@ agent-memory-handoff import \
   --input ./handoff.json \
   --import-policy \
   --import-events \
+  --verify \
   --pretty
 ```
 
@@ -279,6 +281,7 @@ Scope families:
 Notes:
 - `ops.*` requires `jobs:read`
 - `ops.keyring_*` requires `security:read` or `security:manage`
+- signed handoff export/import (`sign=true` / `verify=true`) requires `security:read`
 
 ## Testing
 

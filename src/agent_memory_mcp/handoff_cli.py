@@ -48,6 +48,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             include_policy=args.include_policy,
             include_events=args.include_events,
             max_events_per_session=args.max_events_per_session,
+            sign=args.sign,
             namespace=args.namespace,
         )
     finally:
@@ -80,6 +81,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
             import_policy=args.import_policy,
             import_events=args.import_events,
             max_events_per_session=args.max_events_per_session,
+            verify=args.verify,
             namespace=args.namespace,
         )
     finally:
@@ -130,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=20,
         help="Max events to include for each exported session.",
     )
+    export_parser.add_argument("--sign", action="store_true", help="Sign handoff payload with policy signing secret.")
     export_parser.add_argument("--output", default="-", help="Output JSON file path, or '-' for stdout.")
     export_parser.add_argument("--prompt-output", default=None, help="Optional file path for prompt markdown.")
     export_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
@@ -146,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_parser.add_argument("--import-policy", action="store_true", help="Import and activate policy snapshot.")
     import_parser.add_argument("--import-events", action="store_true", help="Import raw session events.")
+    import_parser.add_argument("--verify", action="store_true", help="Verify handoff signature before import.")
     import_parser.add_argument(
         "--max-events-per-session",
         type=int,

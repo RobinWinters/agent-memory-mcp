@@ -48,3 +48,24 @@ def test_validator_rejects_missing_required_fields() -> None:
     bad_payload = {"schema": HANDOFF_SCHEMA_ID, "namespace": "alpha"}
     with pytest.raises(ValueError, match="schema validation failed"):
         validate_handoff_payload(bad_payload)
+
+
+def test_signed_payload_matches_schema(tmp_path: Path) -> None:
+    svc = make_service(tmp_path / "source.db")
+    svc.update_signing_keys(
+        policy_active_secret="schema-secret",
+        audit_active_secret=None,
+        policy_verification_secrets=("schema-secret",),
+        audit_verification_secrets=(),
+    )
+    svc.append_event("s1", "user", "Signed export.", namespace="alpha")
+    svc.append_event("s1", "assistant", "Schema should still pass.", namespace="alpha")
+    svc.distill_session("s1", namespace="alpha")
+
+    payload = svc.memory_handoff_export(
+        include_policy=False,
+        include_events=False,
+        sign=True,
+        namespace="alpha",
+    )
+    validate_handoff_payload(payload)

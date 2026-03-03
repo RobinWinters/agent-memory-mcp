@@ -11,7 +11,7 @@ from agent_memory_mcp.service import MemoryPolicyService
 from agent_memory_mcp.vector_store import LocalMemoryVectorStore
 
 
-def make_service(db_path: Path) -> MemoryPolicyService:
+def make_service(db_path: Path, policy_signing_secret: str | None = None) -> MemoryPolicyService:
     db = Database(str(db_path))
     return MemoryPolicyService(
         db=db,
@@ -23,6 +23,8 @@ def make_service(db_path: Path) -> MemoryPolicyService:
         job_backoff_base_seconds=0.001,
         job_backoff_max_seconds=0.001,
         job_running_timeout_seconds=1.0,
+        policy_signing_secret=policy_signing_secret,
+        policy_verification_secrets=((policy_signing_secret,) if policy_signing_secret else ()),
     )
 
 
@@ -123,3 +125,53 @@ def test_handoff_import_rejects_unsupported_schema(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unsupported handoff schema"):
         target.memory_handoff_import(handoff=handoff, namespace="target-b")
+
+
+def test_handoff_signed_verify_roundtrip(tmp_path: Path) -> None:
+    secret = "handoff-secret"
+    source = make_service(tmp_path / "source.db", policy_signing_secret=secret)
+    target = make_service(tmp_path / "target.db", policy_signing_secret=secret)
+    seed_memory_and_policy(source, namespace="source-a")
+
+    signed = source.memory_handoff_export(
+        k=5,
+        include_policy=True,
+        include_events=True,
+        sign=True,
+        namespace="source-a",
+    )
+    assert isinstance(signed["signature"], dict)
+
+    imported = target.memory_handoff_import(
+        handoff=signed,
+        import_policy=True,
+        import_events=True,
+        verify=True,
+        namespace="target-b",
+    )
+    assert imported["imported_memories"] >= 1
+    assert imported["imported_policy_version_id"] is not None
+
+
+def test_handoff_verify_rejects_tampered_payload(tmp_path: Path) -> None:
+    secret = "handoff-secret"
+    source = make_service(tmp_path / "source.db", policy_signing_secret=secret)
+    target = make_service(tmp_path / "target.db", policy_signing_secret=secret)
+    seed_memory_and_policy(source, namespace="source-a")
+
+    signed = source.memory_handoff_export(sign=True, namespace="source-a")
+    signed["memories"][0]["content"] = "tampered"
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        target.memory_handoff_import(handoff=signed, verify=True, namespace="target-b")
+
+
+def test_handoff_verify_rejects_missing_signature(tmp_path: Path) -> None:
+    secret = "handoff-secret"
+    source = make_service(tmp_path / "source.db", policy_signing_secret=secret)
+    target = make_service(tmp_path / "target.db", policy_signing_secret=secret)
+    seed_memory_and_policy(source, namespace="source-a")
+
+    unsigned = source.memory_handoff_export(namespace="source-a")
+    with pytest.raises(ValueError, match="signature block is missing"):
+        target.memory_handoff_import(handoff=unsigned, verify=True, namespace="target-b")

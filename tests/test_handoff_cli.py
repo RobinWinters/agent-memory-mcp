@@ -61,6 +61,7 @@ def test_handoff_cli_export_import_roundtrip(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setenv("AGENT_MEMORY_EMBEDDING_BACKEND", "hash")
     monkeypatch.setenv("AGENT_MEMORY_VECTOR_BACKEND", "sqlite")
+    monkeypatch.setenv("AGENT_MEMORY_POLICY_SIGNING_SECRET", "handoff-cli-secret")
 
     seed_source(source_db, namespace=source_ns)
 
@@ -72,6 +73,7 @@ def test_handoff_cli_export_import_roundtrip(tmp_path: Path, monkeypatch) -> Non
             "--namespace",
             source_ns,
             "--include-events",
+            "--sign",
             "--k",
             "5",
             "--output",
@@ -102,6 +104,7 @@ def test_handoff_cli_export_import_roundtrip(tmp_path: Path, monkeypatch) -> Non
             str(handoff_file),
             "--import-policy",
             "--import-events",
+            "--verify",
             "--pretty",
         ]
     )
@@ -131,3 +134,49 @@ def test_handoff_cli_schema_command(tmp_path: Path) -> None:
     payload = json.loads(schema_path.read_text(encoding="utf-8"))
     assert payload["$id"] == HANDOFF_SCHEMA_ID
     assert payload["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+
+
+def test_handoff_cli_verify_rejects_tampered_payload(tmp_path: Path, monkeypatch) -> None:
+    source_ns = "source-cli"
+    target_ns = "target-cli"
+    source_db = tmp_path / "source.db"
+    target_db = tmp_path / "target.db"
+    handoff_file = tmp_path / "handoff.json"
+
+    monkeypatch.setenv("AGENT_MEMORY_EMBEDDING_BACKEND", "hash")
+    monkeypatch.setenv("AGENT_MEMORY_VECTOR_BACKEND", "sqlite")
+    monkeypatch.setenv("AGENT_MEMORY_POLICY_SIGNING_SECRET", "handoff-cli-secret")
+
+    seed_source(source_db, namespace=source_ns)
+
+    export_code = handoff_main(
+        [
+            "export",
+            "--db",
+            str(source_db),
+            "--namespace",
+            source_ns,
+            "--sign",
+            "--output",
+            str(handoff_file),
+        ]
+    )
+    assert export_code == 0
+
+    payload = json.loads(handoff_file.read_text(encoding="utf-8"))
+    payload["memories"][0]["content"] = "tampered"
+    handoff_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    import_code = handoff_main(
+        [
+            "import",
+            "--db",
+            str(target_db),
+            "--namespace",
+            target_ns,
+            "--input",
+            str(handoff_file),
+            "--verify",
+        ]
+    )
+    assert import_code == 1

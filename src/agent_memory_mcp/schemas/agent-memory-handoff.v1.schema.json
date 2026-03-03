@@ -167,6 +167,43 @@
     "prompt_md": {
       "type": "string"
     },
+    "signature": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "signing_method",
+            "content_sha256",
+            "signature",
+            "signed_at"
+          ],
+          "properties": {
+            "signing_method": {
+              "type": "string",
+              "enum": [
+                "hmac-sha256"
+              ]
+            },
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "signature": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "signed_at": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
     "stats": {
       "type": "object",
       "required": [
