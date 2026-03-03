@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+
+class DatabaseMemoryMixin:
+    @staticmethod
+    def _session_pk(namespace: str, session_id: str) -> str:
+        return f"{namespace}::{session_id}"
+
+    def upsert_session(
+        self,
+        namespace: str,
+        session_id: str,
+        started_at: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        session_pk = self._session_pk(namespace=namespace, session_id=session_id)
+        self.conn.execute(
+            """
+            INSERT INTO sessions(session_id, namespace, started_at, metadata_json)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                namespace=excluded.namespace,
+                metadata_json=excluded.metadata_json
+            """,
+            (session_pk, namespace, started_at, json.dumps(metadata)),
+        )
+        self.conn.commit()
+
+    def append_event(
+        self,
+        namespace: str,
+        session_id: str,
+        role: str,
+        content: str,
+        created_at: str,
+        metadata: dict[str, Any],
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO events(namespace, session_id, role, content, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (namespace, session_id, role, content, created_at, json.dumps(metadata)),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def list_events(self, namespace: str, session_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, namespace, session_id, role, content, created_at, metadata_json
+            FROM events
+            WHERE namespace=? AND session_id=?
+            ORDER BY id ASC
+            """,
+            (namespace, session_id),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "namespace": row["namespace"],
+                "session_id": row["session_id"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def insert_memory(
+        self,
+        namespace: str,
+        session_id: str,
+        content: str,
+        embedding: list[float],
+        created_at: str,
+        metadata: dict[str, Any],
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO memories(namespace, session_id, content, embedding_json, created_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (namespace, session_id, content, json.dumps(embedding), created_at, json.dumps(metadata)),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def list_memories(self, namespace: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT id, namespace, session_id, content, embedding_json, created_at, metadata_json
+            FROM memories
+            WHERE namespace=?
+            ORDER BY id ASC
+            """,
+            (namespace,),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "namespace": row["namespace"],
+                "session_id": row["session_id"],
+                "content": row["content"],
+                "embedding": json.loads(row["embedding_json"]),
+                "created_at": row["created_at"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def get_memories_by_ids(self, namespace: str, memory_ids: list[int]) -> list[dict[str, Any]]:
+        if not memory_ids:
+            return []
+        placeholders = ",".join("?" for _ in memory_ids)
+        params: list[Any] = [namespace, *memory_ids]
+        rows = self.conn.execute(
+            f"""
+            SELECT id, namespace, session_id, content, embedding_json, created_at, metadata_json
+            FROM memories
+            WHERE namespace=? AND id IN ({placeholders})
+            """,
+            params,
+        ).fetchall()
+        by_id: dict[int, dict[str, Any]] = {
+            int(row["id"]): {
+                "id": row["id"],
+                "namespace": row["namespace"],
+                "session_id": row["session_id"],
+                "content": row["content"],
+                "embedding": json.loads(row["embedding_json"]),
+                "created_at": row["created_at"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        }
+        ordered: list[dict[str, Any]] = []
+        for memory_id in memory_ids:
+            item = by_id.get(int(memory_id))
+            if item is not None:
+                ordered.append(item)
+        return ordered
