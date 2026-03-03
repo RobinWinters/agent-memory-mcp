@@ -1,5 +1,9 @@
 # agent-memory-mcp
 
+<p align="center">
+  <img src="assets/banner.svg" alt="agent-memory-mcp banner" />
+</p>
+
 `agent-memory-mcp` is a local-first memory and policy service for AI agents.
 
 It gives an agent a structured way to:
