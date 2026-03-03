@@ -28,6 +28,8 @@ class Settings:
     job_backoff_base_seconds: float
     job_backoff_max_seconds: float
     job_running_timeout_seconds: float
+    policy_signing_secret: str | None
+    audit_signing_secret: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,6 +66,8 @@ class Settings:
         job_backoff_base_raw = os.getenv("AGENT_MEMORY_JOB_BACKOFF_BASE_SECONDS", "2.0")
         job_backoff_max_raw = os.getenv("AGENT_MEMORY_JOB_BACKOFF_MAX_SECONDS", "300.0")
         job_running_timeout_raw = os.getenv("AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS", "300.0")
+        policy_signing_secret = os.getenv("AGENT_MEMORY_POLICY_SIGNING_SECRET")
+        audit_signing_secret = os.getenv("AGENT_MEMORY_AUDIT_SIGNING_SECRET")
 
         try:
             threshold = float(threshold_raw)
@@ -113,6 +117,9 @@ class Settings:
         else:
             worker_namespaces = (default_namespace,)
 
+        if not audit_signing_secret:
+            audit_signing_secret = policy_signing_secret
+
         return cls(
             db_path=db_path,
             default_namespace=default_namespace,
@@ -136,4 +143,6 @@ class Settings:
             job_backoff_base_seconds=job_backoff_base_seconds,
             job_backoff_max_seconds=job_backoff_max_seconds,
             job_running_timeout_seconds=job_running_timeout_seconds,
+            policy_signing_secret=policy_signing_secret,
+            audit_signing_secret=audit_signing_secret,
         )

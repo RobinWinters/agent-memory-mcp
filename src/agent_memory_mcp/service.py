@@ -9,6 +9,11 @@ from typing import Any
 from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import Embedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
+from agent_memory_mcp.integrity import (
+    build_policy_artifact,
+    compute_audit_event_hash,
+    verify_policy_artifact,
+)
 from agent_memory_mcp.models import utc_now_iso
 from agent_memory_mcp.vector_store import MemoryVectorStore
 
@@ -42,6 +47,8 @@ class MemoryPolicyService:
     job_backoff_base_seconds: float = 2.0
     job_backoff_max_seconds: float = 300.0
     job_running_timeout_seconds: float = 300.0
+    policy_signing_secret: str | None = None
+    audit_signing_secret: str | None = None
 
     def _ns(self, namespace: str | None) -> str:
         if namespace and namespace.strip():
@@ -63,6 +70,82 @@ class MemoryPolicyService:
         except (TypeError, ValueError):
             parsed = default
         return parsed if parsed > 0 else default
+
+    def _append_audit_event(
+        self,
+        *,
+        namespace: str,
+        event_type: str,
+        entity_type: str,
+        entity_id: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> int:
+        prev_hash = self.db.get_latest_audit_hash(namespace=namespace)
+        event_hash = compute_audit_event_hash(
+            namespace=namespace,
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+            created_at=created_at,
+            prev_hash=prev_hash,
+            audit_secret=self.audit_signing_secret,
+        )
+        return self.db.append_audit_log(
+            namespace=namespace,
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload,
+            prev_hash=prev_hash,
+            event_hash=event_hash,
+            created_at=created_at,
+        )
+
+    def _create_policy_version_with_integrity(
+        self,
+        *,
+        namespace: str,
+        version_id: str,
+        content_md: str,
+        source_proposal_id: str | None,
+        is_active: bool,
+        created_at: str,
+        event_type: str,
+    ) -> None:
+        artifact = build_policy_artifact(
+            namespace=namespace,
+            version_id=version_id,
+            content_md=content_md,
+            created_at=created_at,
+            signing_secret=self.policy_signing_secret,
+        )
+        self.db.create_policy_version(
+            namespace=namespace,
+            version_id=version_id,
+            content_md=content_md,
+            content_sha256=str(artifact["content_sha256"]),
+            signature=artifact["signature"],
+            signing_method=str(artifact["signing_method"]),
+            source_proposal_id=source_proposal_id,
+            is_active=is_active,
+            created_at=created_at,
+        )
+        self._append_audit_event(
+            namespace=namespace,
+            event_type=event_type,
+            entity_type="policy_version",
+            entity_id=version_id,
+            payload={
+                "source_proposal_id": source_proposal_id,
+                "is_active": is_active,
+                "content_sha256": artifact["content_sha256"],
+                "signature": artifact["signature"],
+                "signing_method": artifact["signing_method"],
+            },
+            created_at=created_at,
+        )
 
     def append_event(
         self,
@@ -193,13 +276,14 @@ class MemoryPolicyService:
 
         now = utc_now_iso()
         version_id = f"baseline-{uuid.uuid4().hex[:10]}"
-        self.db.create_policy_version(
+        self._create_policy_version_with_integrity(
             namespace=ns,
             version_id=version_id,
             content_md=BASELINE_POLICY,
             source_proposal_id=None,
             is_active=True,
             created_at=now,
+            event_type="policy.version.created",
         )
         return self.db.get_active_policy_version(namespace=ns) or {}
 
@@ -293,13 +377,14 @@ class MemoryPolicyService:
 
         version_id = f"ver-{uuid.uuid4().hex[:12]}"
         now = utc_now_iso()
-        self.db.create_policy_version(
+        self._create_policy_version_with_integrity(
             namespace=ns,
             version_id=version_id,
             content_md=next_md,
             source_proposal_id=proposal_id,
             is_active=True,
             created_at=now,
+            event_type="policy.version.promoted",
         )
         self.db.set_proposal_status(namespace=ns, proposal_id=proposal_id, status="promoted")
 
@@ -317,6 +402,18 @@ class MemoryPolicyService:
         if not ok:
             raise ValueError(f"policy version '{version_id}' not found in namespace '{ns}'")
         active = self.db.get_active_policy_version(namespace=ns) or {}
+        now = utc_now_iso()
+        self._append_audit_event(
+            namespace=ns,
+            event_type="policy.version.rolled_back",
+            entity_type="policy_version",
+            entity_id=str(active.get("version_id", version_id)),
+            payload={
+                "requested_version_id": version_id,
+                "active_version_id": active.get("version_id", version_id),
+            },
+            created_at=now,
+        )
         return {
             "namespace": ns,
             "version_id": active.get("version_id", version_id),
@@ -464,6 +561,79 @@ class MemoryPolicyService:
             "window_minutes": resolved_window_minutes,
             "jobs": metrics,
             "queue": health,
+        }
+
+    def ops_audit_recent(self, limit: int = 50, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        resolved_limit = self._coerce_positive_int(limit, default=50)
+        entries = self.db.list_audit_logs(namespace=ns, limit=resolved_limit, ascending=False)
+        return {
+            "namespace": ns,
+            "generated_at": utc_now_iso(),
+            "count": len(entries),
+            "entries": entries,
+        }
+
+    def ops_audit_verify(self, limit: int = 1000, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        resolved_limit = self._coerce_positive_int(limit, default=1000)
+        entries = self.db.list_audit_logs(namespace=ns, limit=resolved_limit, ascending=True)
+
+        failures: list[dict[str, Any]] = []
+        prev_event_hash: str | None = None
+        for entry in entries:
+            expected_hash = compute_audit_event_hash(
+                namespace=ns,
+                event_type=str(entry["event_type"]),
+                entity_type=str(entry["entity_type"]),
+                entity_id=str(entry["entity_id"]),
+                payload=dict(entry["payload"]),
+                created_at=str(entry["created_at"]),
+                prev_hash=str(entry["prev_hash"]),
+                audit_secret=self.audit_signing_secret,
+            )
+            if expected_hash != str(entry["event_hash"]):
+                failures.append(
+                    {
+                        "id": entry["id"],
+                        "reason": "event_hash_mismatch",
+                    }
+                )
+
+            if prev_event_hash is not None and str(entry["prev_hash"]) != prev_event_hash:
+                failures.append(
+                    {
+                        "id": entry["id"],
+                        "reason": "prev_hash_chain_break",
+                    }
+                )
+            prev_event_hash = str(entry["event_hash"])
+
+        versions = self.db.list_policy_versions(namespace=ns, limit=resolved_limit)
+        bad_versions: list[str] = []
+        for version in versions:
+            ok = verify_policy_artifact(
+                namespace=ns,
+                version_id=str(version["version_id"]),
+                content_md=str(version["content_md"]),
+                created_at=str(version["created_at"]),
+                content_sha256=str(version["content_sha256"]),
+                signature=version["signature"],
+                signing_method=str(version["signing_method"]),
+                signing_secret=self.policy_signing_secret,
+            )
+            if not ok:
+                bad_versions.append(str(version["version_id"]))
+
+        verified = len(failures) == 0 and len(bad_versions) == 0
+        return {
+            "namespace": ns,
+            "generated_at": utc_now_iso(),
+            "verified": verified,
+            "audit_events_checked": len(entries),
+            "policy_versions_checked": len(versions),
+            "audit_failures": failures,
+            "invalid_policy_versions": bad_versions,
         }
 
     def jobs_run_pending(self, limit: int = 1, namespace: str | None = None) -> dict:

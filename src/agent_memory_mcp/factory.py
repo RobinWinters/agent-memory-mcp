@@ -35,4 +35,6 @@ def build_service(settings: Settings) -> MemoryPolicyService:
         job_backoff_base_seconds=settings.job_backoff_base_seconds,
         job_backoff_max_seconds=settings.job_backoff_max_seconds,
         job_running_timeout_seconds=settings.job_running_timeout_seconds,
+        policy_signing_secret=settings.policy_signing_secret,
+        audit_signing_secret=settings.audit_signing_secret,
     )

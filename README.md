@@ -2,9 +2,9 @@
 
 MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
-background workers, and built-in observability.
+background workers, observability, and integrity verification.
 
-## Current build status (v0.8.0)
+## Current build status (v0.9.0)
 
 Implemented:
 
@@ -20,17 +20,17 @@ Implemented:
 - Policy lifecycle with gating:
   - `propose` -> `evaluate` -> `promote` -> `rollback`
 - API-key auth + ACL scopes.
-- Durable async jobs for `memory.distill` and `policy.evaluate`.
-- Background worker daemon for automatic job processing.
+- Durable async jobs + background worker daemon.
 - Reliability hardening:
-  - attempt tracking
-  - exponential backoff retries
-  - dead-lettering at max attempts
-  - stuck-running recovery
+  - retries, backoff, dead-lettering, stuck-job recovery
 - Observability:
   - queue health snapshots
-  - windowed throughput/success/failure metrics
+  - throughput/success/failure metrics
   - queue/run/end-to-end latency aggregates
+- Integrity hardening:
+  - policy content digest + optional HMAC signatures
+  - append-only audit hash chain
+  - audit chain + policy signature verification tools
 
 ## Binaries
 
@@ -53,6 +53,8 @@ Implemented:
 - `jobs.result(job_id, namespace?, api_key?)`
 - `ops.health(namespace?, api_key?)`
 - `ops.metrics(window_minutes=60, namespace?, api_key?)`
+- `ops.audit_recent(limit=50, namespace?, api_key?)`
+- `ops.audit_verify(limit=1000, namespace?, api_key?)`
 
 Supported `job_type` values:
 - `memory.distill`
@@ -66,9 +68,9 @@ Persisted statuses:
 - `succeeded`
 - `dead`
 
-`jobs.run_pending` includes additional outcome counters:
-- `retried` (failed attempt and requeued)
-- `dead` (failed and exceeded max attempts)
+`jobs.run_pending` also reports:
+- `retried`
+- `dead`
 - `recovered_stuck` (`requeued`, `dead_lettered`)
 
 ## Environment
@@ -99,6 +101,10 @@ Job reliability:
 - `AGENT_MEMORY_JOB_BACKOFF_BASE_SECONDS` (default: `2.0`)
 - `AGENT_MEMORY_JOB_BACKOFF_MAX_SECONDS` (default: `300.0`)
 - `AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS` (default: `300.0`)
+
+Integrity:
+- `AGENT_MEMORY_POLICY_SIGNING_SECRET` (optional HMAC secret for policy version signatures)
+- `AGENT_MEMORY_AUDIT_SIGNING_SECRET` (optional HMAC secret for audit chain; defaults to policy secret)
 
 Auth:
 - `AGENT_MEMORY_AUTH_MODE` (`off` or `api_key`, default: `off`)
@@ -165,19 +171,20 @@ pytest tests/test_service.py -q
 pytest tests/test_jobs.py -q
 pytest tests/test_worker.py -q
 pytest tests/test_observability.py -q
+pytest tests/test_integrity.py -q
 pytest -q
 ```
 
 ## Next phase
 
-1. Policy artifact signing + tamper-evident audit logs.
-2. Exportable metrics endpoint/adapters (Prometheus/OpenTelemetry).
+1. Exportable metrics endpoint/adapters (Prometheus/OpenTelemetry).
+2. Key rotation/management tooling for signing and auth secrets.
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.8.0: observability tools and metrics"
+git commit -m "Build out v0.9.0: policy signing and tamper-evident audit logs"
 git push
 ```

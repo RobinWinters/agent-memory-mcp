@@ -83,8 +83,23 @@ class Database:
                 version_id TEXT PRIMARY KEY,
                 namespace TEXT NOT NULL DEFAULT 'default',
                 content_md TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL DEFAULT '',
+                signature TEXT,
+                signing_method TEXT NOT NULL DEFAULT 'none',
                 source_proposal_id TEXT,
                 is_active INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'default',
+                event_type TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                prev_hash TEXT NOT NULL,
+                event_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
@@ -117,6 +132,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_policy_prop_ns ON policy_proposals(namespace, proposal_id);
             CREATE INDEX IF NOT EXISTS idx_policy_eval_ns_proposal ON policy_evaluations(namespace, proposal_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_policy_ver_ns_active ON policy_versions(namespace, is_active, created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_ns_id ON audit_logs(namespace, id);
             CREATE INDEX IF NOT EXISTS idx_jobs_ns_status_created ON jobs(namespace, status, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_ns_status_next_run ON jobs(namespace, status, next_run_at, id);
             """
@@ -150,6 +166,22 @@ class Database:
                 WHERE next_run_at IS NULL OR next_run_at = ''
                 """
             )
+
+        if not self._table_has_column("policy_versions", "content_sha256"):
+            self.conn.execute("ALTER TABLE policy_versions ADD COLUMN content_sha256 TEXT NOT NULL DEFAULT ''")
+            self.conn.execute(
+                """
+                UPDATE policy_versions
+                SET content_sha256 = ''
+                WHERE content_sha256 IS NULL
+                """
+            )
+
+        if not self._table_has_column("policy_versions", "signature"):
+            self.conn.execute("ALTER TABLE policy_versions ADD COLUMN signature TEXT")
+
+        if not self._table_has_column("policy_versions", "signing_method"):
+            self.conn.execute("ALTER TABLE policy_versions ADD COLUMN signing_method TEXT NOT NULL DEFAULT 'none'")
 
         self.conn.commit()
 
@@ -391,6 +423,9 @@ class Database:
         namespace: str,
         version_id: str,
         content_md: str,
+        content_sha256: str,
+        signature: str | None,
+        signing_method: str,
         source_proposal_id: str | None,
         is_active: bool,
         created_at: str,
@@ -402,10 +437,30 @@ class Database:
             )
         self.conn.execute(
             """
-            INSERT INTO policy_versions(namespace, version_id, content_md, source_proposal_id, is_active, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO policy_versions(
+                namespace,
+                version_id,
+                content_md,
+                content_sha256,
+                signature,
+                signing_method,
+                source_proposal_id,
+                is_active,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (namespace, version_id, content_md, source_proposal_id, int(is_active), created_at),
+            (
+                namespace,
+                version_id,
+                content_md,
+                content_sha256,
+                signature,
+                signing_method,
+                source_proposal_id,
+                int(is_active),
+                created_at,
+            ),
         )
         self.conn.commit()
 
@@ -430,7 +485,16 @@ class Database:
     def get_active_policy_version(self, namespace: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT namespace, version_id, content_md, source_proposal_id, is_active, created_at
+            SELECT
+                namespace,
+                version_id,
+                content_md,
+                content_sha256,
+                signature,
+                signing_method,
+                source_proposal_id,
+                is_active,
+                created_at
             FROM policy_versions
             WHERE namespace=? AND is_active=1
             LIMIT 1
@@ -443,6 +507,9 @@ class Database:
             "namespace": row["namespace"],
             "version_id": row["version_id"],
             "content_md": row["content_md"],
+            "content_sha256": row["content_sha256"],
+            "signature": row["signature"],
+            "signing_method": row["signing_method"],
             "source_proposal_id": row["source_proposal_id"],
             "is_active": bool(row["is_active"]),
             "created_at": row["created_at"],
@@ -451,7 +518,16 @@ class Database:
     def get_policy_version(self, namespace: str, version_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT namespace, version_id, content_md, source_proposal_id, is_active, created_at
+            SELECT
+                namespace,
+                version_id,
+                content_md,
+                content_sha256,
+                signature,
+                signing_method,
+                source_proposal_id,
+                is_active,
+                created_at
             FROM policy_versions
             WHERE namespace=? AND version_id=?
             """,
@@ -463,10 +539,48 @@ class Database:
             "namespace": row["namespace"],
             "version_id": row["version_id"],
             "content_md": row["content_md"],
+            "content_sha256": row["content_sha256"],
+            "signature": row["signature"],
+            "signing_method": row["signing_method"],
             "source_proposal_id": row["source_proposal_id"],
             "is_active": bool(row["is_active"]),
             "created_at": row["created_at"],
         }
+
+    def list_policy_versions(self, namespace: str, limit: int = 1000) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT
+                namespace,
+                version_id,
+                content_md,
+                content_sha256,
+                signature,
+                signing_method,
+                source_proposal_id,
+                is_active,
+                created_at
+            FROM policy_versions
+            WHERE namespace=?
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (namespace, max(1, int(limit))),
+        ).fetchall()
+        return [
+            {
+                "namespace": row["namespace"],
+                "version_id": row["version_id"],
+                "content_md": row["content_md"],
+                "content_sha256": row["content_sha256"],
+                "signature": row["signature"],
+                "signing_method": row["signing_method"],
+                "source_proposal_id": row["source_proposal_id"],
+                "is_active": bool(row["is_active"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def create_job(
         self,
@@ -823,6 +937,87 @@ class Database:
             "avg_end_to_end_latency_seconds": _avg(end_to_end_latencies),
             "completed_by_type": by_type,
         }
+
+    def get_latest_audit_hash(self, namespace: str) -> str:
+        row = self.conn.execute(
+            """
+            SELECT event_hash
+            FROM audit_logs
+            WHERE namespace=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (namespace,),
+        ).fetchone()
+        if row is None:
+            return ""
+        return str(row["event_hash"])
+
+    def append_audit_log(
+        self,
+        namespace: str,
+        event_type: str,
+        entity_type: str,
+        entity_id: str,
+        payload: dict[str, Any],
+        prev_hash: str,
+        event_hash: str,
+        created_at: str,
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO audit_logs(
+                namespace,
+                event_type,
+                entity_type,
+                entity_id,
+                payload_json,
+                prev_hash,
+                event_hash,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                namespace,
+                event_type,
+                entity_type,
+                entity_id,
+                json.dumps(payload, sort_keys=True),
+                prev_hash,
+                event_hash,
+                created_at,
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def list_audit_logs(self, namespace: str, limit: int = 100, ascending: bool = False) -> list[dict[str, Any]]:
+        order = "ASC" if ascending else "DESC"
+        rows = self.conn.execute(
+            f"""
+            SELECT id, namespace, event_type, entity_type, entity_id, payload_json, prev_hash, event_hash, created_at
+            FROM audit_logs
+            WHERE namespace=?
+            ORDER BY id {order}
+            LIMIT ?
+            """,
+            (namespace, max(1, int(limit))),
+        ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "namespace": row["namespace"],
+                "event_type": row["event_type"],
+                "entity_type": row["entity_type"],
+                "entity_id": row["entity_id"],
+                "payload": json.loads(row["payload_json"]),
+                "prev_hash": row["prev_hash"],
+                "event_hash": row["event_hash"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def close(self) -> None:
         self.conn.close()

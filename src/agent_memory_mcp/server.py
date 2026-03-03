@@ -226,6 +226,28 @@ def ops_metrics(
     return get_service().ops_metrics(window_minutes=window_minutes, namespace=resolved_ns)
 
 
+@mcp.tool(name="ops.audit_recent")
+def ops_audit_recent(
+    limit: int = 50,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Return recent audit log entries for tamper-evident policy events."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().ops_audit_recent(limit=limit, namespace=resolved_ns)
+
+
+@mcp.tool(name="ops.audit_verify")
+def ops_audit_verify(
+    limit: int = 1000,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Verify audit hash-chain continuity and policy artifact signatures."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().ops_audit_verify(limit=limit, namespace=resolved_ns)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 
