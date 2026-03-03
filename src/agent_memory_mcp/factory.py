@@ -31,4 +31,8 @@ def build_service(settings: Settings) -> MemoryPolicyService:
         evaluator=evaluator,
         vector_store=vector_store,
         default_namespace=settings.default_namespace,
+        job_default_max_attempts=settings.job_default_max_attempts,
+        job_backoff_base_seconds=settings.job_backoff_base_seconds,
+        job_backoff_max_seconds=settings.job_backoff_max_seconds,
+        job_running_timeout_seconds=settings.job_running_timeout_seconds,
     )

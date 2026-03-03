@@ -30,16 +30,29 @@ class WorkerLoop:
         processed = 0
         succeeded = 0
         failed = 0
+        retried = 0
+        dead = 0
+        recovered_requeued = 0
+        recovered_dead_lettered = 0
 
         for namespace in self.namespaces:
             result = self.service.jobs_run_pending(limit=self.batch_size, namespace=namespace)
             ns_processed = int(result.get("processed", 0))
             ns_succeeded = int(result.get("succeeded", 0))
             ns_failed = int(result.get("failed", 0))
+            ns_retried = int(result.get("retried", 0))
+            ns_dead = int(result.get("dead", 0))
+            ns_recovered = dict(result.get("recovered_stuck", {}))
+            ns_recovered_requeued = int(ns_recovered.get("requeued", 0))
+            ns_recovered_dead = int(ns_recovered.get("dead_lettered", 0))
 
             processed += ns_processed
             succeeded += ns_succeeded
             failed += ns_failed
+            retried += ns_retried
+            dead += ns_dead
+            recovered_requeued += ns_recovered_requeued
+            recovered_dead_lettered += ns_recovered_dead
 
             per_namespace.append(
                 {
@@ -47,6 +60,12 @@ class WorkerLoop:
                     "processed": ns_processed,
                     "succeeded": ns_succeeded,
                     "failed": ns_failed,
+                    "retried": ns_retried,
+                    "dead": ns_dead,
+                    "recovered_stuck": {
+                        "requeued": ns_recovered_requeued,
+                        "dead_lettered": ns_recovered_dead,
+                    },
                 }
             )
 
@@ -55,6 +74,12 @@ class WorkerLoop:
             "processed": processed,
             "succeeded": succeeded,
             "failed": failed,
+            "retried": retried,
+            "dead": dead,
+            "recovered_stuck": {
+                "requeued": recovered_requeued,
+                "dead_lettered": recovered_dead_lettered,
+            },
             "per_namespace": per_namespace,
             "elapsed_ms": elapsed_ms,
         }
@@ -64,6 +89,10 @@ class WorkerLoop:
         total_processed = 0
         total_succeeded = 0
         total_failed = 0
+        total_retried = 0
+        total_dead = 0
+        total_recovered_requeued = 0
+        total_recovered_dead = 0
 
         while not self.stop_event.is_set():
             cycle = self.run_cycle()
@@ -71,6 +100,11 @@ class WorkerLoop:
             total_processed += int(cycle["processed"])
             total_succeeded += int(cycle["succeeded"])
             total_failed += int(cycle["failed"])
+            total_retried += int(cycle.get("retried", 0))
+            total_dead += int(cycle.get("dead", 0))
+            recovered = dict(cycle.get("recovered_stuck", {}))
+            total_recovered_requeued += int(recovered.get("requeued", 0))
+            total_recovered_dead += int(recovered.get("dead_lettered", 0))
 
             if max_cycles is not None and cycles >= max_cycles:
                 break
@@ -83,6 +117,12 @@ class WorkerLoop:
             "processed": total_processed,
             "succeeded": total_succeeded,
             "failed": total_failed,
+            "retried": total_retried,
+            "dead": total_dead,
+            "recovered_stuck": {
+                "requeued": total_recovered_requeued,
+                "dead_lettered": total_recovered_dead,
+            },
         }
 
 

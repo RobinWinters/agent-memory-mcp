@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agent_memory_mcp.db import Database
@@ -37,6 +38,10 @@ class MemoryPolicyService:
     evaluator: PolicyEvaluator
     vector_store: MemoryVectorStore
     default_namespace: str = "default"
+    job_default_max_attempts: int = 3
+    job_backoff_base_seconds: float = 2.0
+    job_backoff_max_seconds: float = 300.0
+    job_running_timeout_seconds: float = 300.0
 
     def _ns(self, namespace: str | None) -> str:
         if namespace and namespace.strip():
@@ -47,6 +52,14 @@ class MemoryPolicyService:
     def _coerce_positive_int(value: Any, default: int) -> int:
         try:
             parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _coerce_positive_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
         except (TypeError, ValueError):
             parsed = default
         return parsed if parsed > 0 else default
@@ -317,6 +330,11 @@ class MemoryPolicyService:
         if normalized_job_type not in SUPPORTED_JOB_TYPES:
             raise ValueError(f"unsupported job_type '{job_type}'")
 
+        max_attempts = self._coerce_positive_int(
+            payload.get("max_attempts", self.job_default_max_attempts),
+            default=self.job_default_max_attempts,
+        )
+
         if normalized_job_type == "memory.distill":
             session_id = str(payload.get("session_id", "")).strip()
             if not session_id:
@@ -338,6 +356,7 @@ class MemoryPolicyService:
             namespace=ns,
             job_type=normalized_job_type,
             payload=normalized_payload,
+            max_attempts=max_attempts,
             created_at=now,
         )
         return {
@@ -345,6 +364,9 @@ class MemoryPolicyService:
             "namespace": ns,
             "job_type": normalized_job_type,
             "status": "queued",
+            "attempt_count": 0,
+            "max_attempts": max_attempts,
+            "next_run_at": now,
             "created_at": now,
         }
 
@@ -362,6 +384,9 @@ class MemoryPolicyService:
             "job_type": job["job_type"],
             "status": job["status"],
             "error": job["error"],
+            "attempt_count": job["attempt_count"],
+            "max_attempts": job["max_attempts"],
+            "next_run_at": job["next_run_at"],
             "created_at": job["created_at"],
             "updated_at": job["updated_at"],
             "started_at": job["started_at"],
@@ -383,6 +408,9 @@ class MemoryPolicyService:
             "status": job["status"],
             "result": job["result"],
             "error": job["error"],
+            "attempt_count": job["attempt_count"],
+            "max_attempts": job["max_attempts"],
+            "next_run_at": job["next_run_at"],
             "created_at": job["created_at"],
             "updated_at": job["updated_at"],
             "started_at": job["started_at"],
@@ -394,6 +422,17 @@ class MemoryPolicyService:
         resolved_limit = self._coerce_positive_int(limit, default=1)
         jobs: list[dict[str, Any]] = []
 
+        recovery_now = utc_now_iso()
+        recovery_now_dt = datetime.fromisoformat(recovery_now)
+        cutoff_dt = recovery_now_dt - timedelta(
+            seconds=self._coerce_positive_float(self.job_running_timeout_seconds, default=300.0)
+        )
+        recovery = self.db.recover_stuck_running_jobs(
+            namespace=ns,
+            cutoff_started_at=cutoff_dt.isoformat(),
+            now=recovery_now,
+        )
+
         for _ in range(resolved_limit):
             now = utc_now_iso()
             job = self.db.claim_next_queued_job(namespace=ns, now=now)
@@ -402,6 +441,8 @@ class MemoryPolicyService:
 
             job_id = int(job["job_id"])
             job_type = str(job["job_type"])
+            attempt_count = int(job.get("attempt_count", 1))
+            max_attempts = int(job.get("max_attempts", self.job_default_max_attempts))
             try:
                 result = self._execute_job(job=job)
                 finished_at = utc_now_iso()
@@ -416,32 +457,69 @@ class MemoryPolicyService:
                         "job_id": job_id,
                         "job_type": job_type,
                         "status": "succeeded",
+                        "attempt_count": attempt_count,
+                        "max_attempts": max_attempts,
                     }
                 )
             except Exception as exc:
                 finished_at = utc_now_iso()
-                self.db.finish_job_failure(
-                    namespace=ns,
-                    job_id=job_id,
-                    error_text=str(exc),
-                    now=finished_at,
-                )
-                jobs.append(
-                    {
-                        "job_id": job_id,
-                        "job_type": job_type,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
+                error_text = str(exc)
+                if attempt_count >= max_attempts:
+                    self.db.dead_letter_job(
+                        namespace=ns,
+                        job_id=job_id,
+                        error_text=error_text,
+                        now=finished_at,
+                    )
+                    jobs.append(
+                        {
+                            "job_id": job_id,
+                            "job_type": job_type,
+                            "status": "dead",
+                            "error": error_text,
+                            "attempt_count": attempt_count,
+                            "max_attempts": max_attempts,
+                        }
+                    )
+                else:
+                    delay_seconds = min(
+                        self._coerce_positive_float(self.job_backoff_max_seconds, default=300.0),
+                        self._coerce_positive_float(self.job_backoff_base_seconds, default=2.0)
+                        * (2 ** max(attempt_count - 1, 0)),
+                    )
+                    finished_dt = datetime.fromisoformat(finished_at)
+                    next_run_at = (finished_dt + timedelta(seconds=delay_seconds)).isoformat()
+                    self.db.requeue_job(
+                        namespace=ns,
+                        job_id=job_id,
+                        error_text=error_text,
+                        next_run_at=next_run_at,
+                        now=finished_at,
+                    )
+                    jobs.append(
+                        {
+                            "job_id": job_id,
+                            "job_type": job_type,
+                            "status": "retried",
+                            "error": error_text,
+                            "attempt_count": attempt_count,
+                            "max_attempts": max_attempts,
+                            "next_run_at": next_run_at,
+                        }
+                    )
 
         succeeded = sum(1 for item in jobs if item["status"] == "succeeded")
-        failed = sum(1 for item in jobs if item["status"] == "failed")
+        failed = sum(1 for item in jobs if item["status"] in {"dead", "retried"})
+        dead = sum(1 for item in jobs if item["status"] == "dead")
+        retried = sum(1 for item in jobs if item["status"] == "retried")
         return {
             "namespace": ns,
             "processed": len(jobs),
             "succeeded": succeeded,
             "failed": failed,
+            "retried": retried,
+            "dead": dead,
+            "recovered_stuck": recovery,
             "jobs": jobs,
         }
 

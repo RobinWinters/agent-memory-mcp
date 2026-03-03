@@ -24,6 +24,10 @@ class Settings:
     worker_poll_seconds: float
     worker_batch_size: int
     worker_namespaces: tuple[str, ...]
+    job_default_max_attempts: int
+    job_backoff_base_seconds: float
+    job_backoff_max_seconds: float
+    job_running_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -56,6 +60,10 @@ class Settings:
         worker_poll_raw = os.getenv("AGENT_MEMORY_WORKER_POLL_SECONDS", "1.0")
         worker_batch_raw = os.getenv("AGENT_MEMORY_WORKER_BATCH_SIZE", "20")
         worker_namespaces_raw = os.getenv("AGENT_MEMORY_WORKER_NAMESPACES")
+        job_max_attempts_raw = os.getenv("AGENT_MEMORY_JOB_MAX_ATTEMPTS", "3")
+        job_backoff_base_raw = os.getenv("AGENT_MEMORY_JOB_BACKOFF_BASE_SECONDS", "2.0")
+        job_backoff_max_raw = os.getenv("AGENT_MEMORY_JOB_BACKOFF_MAX_SECONDS", "300.0")
+        job_running_timeout_raw = os.getenv("AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS", "300.0")
 
         try:
             threshold = float(threshold_raw)
@@ -73,11 +81,31 @@ class Settings:
             worker_batch_size = int(worker_batch_raw)
         except ValueError:
             worker_batch_size = 20
+        try:
+            job_default_max_attempts = int(job_max_attempts_raw)
+        except ValueError:
+            job_default_max_attempts = 3
+        try:
+            job_backoff_base_seconds = float(job_backoff_base_raw)
+        except ValueError:
+            job_backoff_base_seconds = 2.0
+        try:
+            job_backoff_max_seconds = float(job_backoff_max_raw)
+        except ValueError:
+            job_backoff_max_seconds = 300.0
+        try:
+            job_running_timeout_seconds = float(job_running_timeout_raw)
+        except ValueError:
+            job_running_timeout_seconds = 300.0
 
         threshold = max(0.0, min(1.0, threshold))
         qdrant_timeout_seconds = max(0.5, qdrant_timeout_seconds)
         worker_poll_seconds = max(0.1, worker_poll_seconds)
         worker_batch_size = max(1, worker_batch_size)
+        job_default_max_attempts = max(1, job_default_max_attempts)
+        job_backoff_base_seconds = max(0.1, job_backoff_base_seconds)
+        job_backoff_max_seconds = max(job_backoff_base_seconds, job_backoff_max_seconds)
+        job_running_timeout_seconds = max(1.0, job_running_timeout_seconds)
 
         if worker_namespaces_raw:
             parsed = [part.strip() for part in worker_namespaces_raw.split(",") if part.strip()]
@@ -104,4 +132,8 @@ class Settings:
             worker_poll_seconds=worker_poll_seconds,
             worker_batch_size=worker_batch_size,
             worker_namespaces=worker_namespaces,
+            job_default_max_attempts=job_default_max_attempts,
+            job_backoff_base_seconds=job_backoff_base_seconds,
+            job_backoff_max_seconds=job_backoff_max_seconds,
+            job_running_timeout_seconds=job_running_timeout_seconds,
         )

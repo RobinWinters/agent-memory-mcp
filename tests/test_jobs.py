@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import HashEmbedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
+from agent_memory_mcp.models import utc_now_iso
 from agent_memory_mcp.service import MemoryPolicyService
 from agent_memory_mcp.vector_store import LocalMemoryVectorStore
 
@@ -17,6 +19,10 @@ def make_service(tmp_path: Path) -> MemoryPolicyService:
         evaluator=PolicyEvaluator(pass_threshold=0.7),
         vector_store=LocalMemoryVectorStore(db=db),
         default_namespace="default",
+        job_default_max_attempts=3,
+        job_backoff_base_seconds=0.001,
+        job_backoff_max_seconds=0.001,
+        job_running_timeout_seconds=1.0,
     )
 
 
@@ -64,17 +70,51 @@ def test_async_policy_evaluate_flow(tmp_path: Path) -> None:
     assert result["result"]["proposal_id"] == proposal["proposal_id"]
 
 
-def test_job_failure_capture(tmp_path: Path) -> None:
+def test_job_retry_then_dead_letter(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
 
     queued = svc.jobs_submit(
         job_type="memory.distill",
-        payload={"session_id": "missing-session", "max_lines": 6},
+        payload={"session_id": "missing-session", "max_lines": 6, "max_attempts": 2},
     )
 
-    run = svc.jobs_run_pending(limit=1)
-    assert run["failed"] == 1
+    run_1 = svc.jobs_run_pending(limit=1)
+    assert run_1["retried"] == 1
+    first = svc.jobs_result(queued["job_id"])
+    assert first["status"] == "queued"
+    assert first["attempt_count"] == 1
+
+    time.sleep(0.01)
+    run_2 = svc.jobs_run_pending(limit=1)
+    assert run_2["dead"] == 1
 
     result = svc.jobs_result(queued["job_id"])
-    assert result["status"] == "failed"
+    assert result["status"] == "dead"
+    assert result["attempt_count"] == 2
     assert "has no events" in (result["error"] or "")
+
+
+def test_stuck_running_recovery(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    svc.append_event("s1", "user", "recover me")
+    svc.append_event("s1", "assistant", "please")
+
+    queued = svc.jobs_submit(
+        job_type="memory.distill",
+        payload={"session_id": "s1", "max_lines": 6, "max_attempts": 3},
+    )
+
+    claimed = svc.db.claim_next_queued_job(namespace="default", now=utc_now_iso())
+    assert claimed is not None
+    svc.db.conn.execute(
+        "UPDATE jobs SET started_at=?, updated_at=? WHERE id=?",
+        ("2000-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00", queued["job_id"]),
+    )
+    svc.db.conn.commit()
+
+    run = svc.jobs_run_pending(limit=1)
+    assert run["recovered_stuck"]["requeued"] == 1
+    assert run["succeeded"] == 1
+
+    result = svc.jobs_result(queued["job_id"])
+    assert result["status"] == "succeeded"

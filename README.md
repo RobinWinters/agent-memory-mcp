@@ -1,9 +1,10 @@
 # agent-memory-mcp
 
 MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
-pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, and durable async jobs.
+pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
+and background workers.
 
-## Current build status (v0.6.0)
+## Current build status (v0.7.0)
 
 Implemented:
 
@@ -21,6 +22,11 @@ Implemented:
 - API-key auth + ACL scopes.
 - Durable async jobs for `memory.distill` and `policy.evaluate`.
 - Background worker daemon for automatic job processing.
+- Reliability hardening for jobs:
+  - attempt tracking
+  - exponential backoff retries
+  - dead-lettering at max attempts
+  - stuck-running recovery
 
 ## Binaries
 
@@ -46,6 +52,19 @@ Supported `job_type` values:
 - `memory.distill`
 - `policy.evaluate`
 
+## Job lifecycle semantics
+
+Persisted statuses:
+- `queued`
+- `running`
+- `succeeded`
+- `dead`
+
+`jobs.run_pending` response also includes transient outcome counts:
+- `retried` (job failed this attempt and was requeued)
+- `dead` (job failed and exceeded max attempts)
+- `recovered_stuck` (`requeued`, `dead_lettered`)
+
 ## Environment
 
 Core:
@@ -68,6 +87,12 @@ Worker:
 - `AGENT_MEMORY_WORKER_POLL_SECONDS` (default: `1.0`)
 - `AGENT_MEMORY_WORKER_BATCH_SIZE` (default: `20`)
 - `AGENT_MEMORY_WORKER_NAMESPACES` (comma-separated list, default: `AGENT_MEMORY_NAMESPACE`)
+
+Job reliability:
+- `AGENT_MEMORY_JOB_MAX_ATTEMPTS` (default: `3`)
+- `AGENT_MEMORY_JOB_BACKOFF_BASE_SECONDS` (default: `2.0`)
+- `AGENT_MEMORY_JOB_BACKOFF_MAX_SECONDS` (default: `300.0`)
+- `AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS` (default: `300.0`)
 
 Auth:
 - `AGENT_MEMORY_AUTH_MODE` (`off` or `api_key`, default: `off`)
@@ -136,15 +161,14 @@ pytest -q
 
 ## Next phase
 
-1. Reliability hardening (retry/backoff/dead-letter + stuck-job recovery).
-2. Observability (queue depth, latency, failure metrics).
-3. Policy artifact signing + tamper-evident audit logs.
+1. Observability (queue depth, latency, failure metrics).
+2. Policy artifact signing + tamper-evident audit logs.
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.6.0: worker daemon for async jobs"
+git commit -m "Build out v0.7.0: retry/backoff/dead-letter and stuck-job recovery"
 git push
 ```

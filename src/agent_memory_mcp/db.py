@@ -95,6 +95,9 @@ class Database:
                 status TEXT NOT NULL,
                 result_json TEXT,
                 error_text TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                next_run_at TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 started_at TEXT,
@@ -114,6 +117,7 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_policy_eval_ns_proposal ON policy_evaluations(namespace, proposal_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_policy_ver_ns_active ON policy_versions(namespace, is_active, created_at);
             CREATE INDEX IF NOT EXISTS idx_jobs_ns_status_created ON jobs(namespace, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_jobs_ns_status_next_run ON jobs(namespace, status, next_run_at, id);
             """
         )
         self.conn.commit()
@@ -128,6 +132,22 @@ class Database:
         if not self._table_has_column("policy_evaluations", "checks_json"):
             self.conn.execute(
                 "ALTER TABLE policy_evaluations ADD COLUMN checks_json TEXT NOT NULL DEFAULT '[]'"
+            )
+
+        if not self._table_has_column("jobs", "attempt_count"):
+            self.conn.execute("ALTER TABLE jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
+
+        if not self._table_has_column("jobs", "max_attempts"):
+            self.conn.execute("ALTER TABLE jobs ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 3")
+
+        if not self._table_has_column("jobs", "next_run_at"):
+            self.conn.execute("ALTER TABLE jobs ADD COLUMN next_run_at TEXT")
+            self.conn.execute(
+                """
+                UPDATE jobs
+                SET next_run_at = COALESCE(created_at, updated_at)
+                WHERE next_run_at IS NULL OR next_run_at = ''
+                """
             )
 
         self.conn.commit()
@@ -452,14 +472,29 @@ class Database:
         namespace: str,
         job_type: str,
         payload: dict[str, Any],
+        max_attempts: int,
         created_at: str,
     ) -> int:
         cursor = self.conn.execute(
             """
-            INSERT INTO jobs(namespace, job_type, payload_json, status, result_json, error_text, created_at, updated_at, started_at, finished_at)
-            VALUES (?, ?, ?, 'queued', NULL, NULL, ?, ?, NULL, NULL)
+            INSERT INTO jobs(
+                namespace,
+                job_type,
+                payload_json,
+                status,
+                result_json,
+                error_text,
+                attempt_count,
+                max_attempts,
+                next_run_at,
+                created_at,
+                updated_at,
+                started_at,
+                finished_at
+            )
+            VALUES (?, ?, ?, 'queued', NULL, NULL, 0, ?, ?, ?, ?, NULL, NULL)
             """,
-            (namespace, job_type, json.dumps(payload), created_at, created_at),
+            (namespace, job_type, json.dumps(payload), max_attempts, created_at, created_at, created_at),
         )
         self.conn.commit()
         return int(cursor.lastrowid)
@@ -467,7 +502,21 @@ class Database:
     def get_job(self, namespace: str, job_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT id, namespace, job_type, payload_json, status, result_json, error_text, created_at, updated_at, started_at, finished_at
+            SELECT
+                id,
+                namespace,
+                job_type,
+                payload_json,
+                status,
+                result_json,
+                error_text,
+                attempt_count,
+                max_attempts,
+                next_run_at,
+                created_at,
+                updated_at,
+                started_at,
+                finished_at
             FROM jobs
             WHERE namespace=? AND id=?
             """,
@@ -483,6 +532,9 @@ class Database:
             "status": row["status"],
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
             "error": row["error_text"],
+            "attempt_count": int(row["attempt_count"]),
+            "max_attempts": int(row["max_attempts"]),
+            "next_run_at": row["next_run_at"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "started_at": row["started_at"],
@@ -494,11 +546,11 @@ class Database:
             """
             SELECT id
             FROM jobs
-            WHERE namespace=? AND status='queued'
-            ORDER BY id ASC
+            WHERE namespace=? AND status='queued' AND next_run_at <= ?
+            ORDER BY next_run_at ASC, id ASC
             LIMIT 1
             """,
-            (namespace,),
+            (namespace, now),
         ).fetchone()
         if row is None:
             return None
@@ -507,7 +559,7 @@ class Database:
         cursor = self.conn.execute(
             """
             UPDATE jobs
-            SET status='running', started_at=?, updated_at=?
+            SET status='running', started_at=?, updated_at=?, attempt_count=attempt_count+1
             WHERE id=? AND namespace=? AND status='queued'
             """,
             (now, now, job_id, namespace),
@@ -527,14 +579,32 @@ class Database:
         self.conn.execute(
             """
             UPDATE jobs
-            SET status='succeeded', result_json=?, error_text=NULL, updated_at=?, finished_at=?
+            SET status='succeeded', result_json=?, error_text=NULL, updated_at=?, finished_at=?, next_run_at=?
             WHERE id=? AND namespace=?
             """,
-            (json.dumps(result), now, now, job_id, namespace),
+            (json.dumps(result), now, now, now, job_id, namespace),
         )
         self.conn.commit()
 
-    def finish_job_failure(
+    def requeue_job(
+        self,
+        namespace: str,
+        job_id: int,
+        error_text: str,
+        next_run_at: str,
+        now: str,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE jobs
+            SET status='queued', result_json=NULL, error_text=?, updated_at=?, finished_at=NULL, started_at=NULL, next_run_at=?
+            WHERE id=? AND namespace=? AND status='running'
+            """,
+            (error_text, now, next_run_at, job_id, namespace),
+        )
+        self.conn.commit()
+
+    def dead_letter_job(
         self,
         namespace: str,
         job_id: int,
@@ -544,12 +614,52 @@ class Database:
         self.conn.execute(
             """
             UPDATE jobs
-            SET status='failed', result_json=NULL, error_text=?, updated_at=?, finished_at=?
+            SET status='dead', result_json=NULL, error_text=?, updated_at=?, finished_at=?
             WHERE id=? AND namespace=?
             """,
             (error_text, now, now, job_id, namespace),
         )
         self.conn.commit()
+
+    def recover_stuck_running_jobs(self, namespace: str, cutoff_started_at: str, now: str) -> dict[str, int]:
+        requeue_cursor = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status='queued',
+                updated_at=?,
+                started_at=NULL,
+                finished_at=NULL,
+                next_run_at=?,
+                error_text='Recovered stuck running job'
+            WHERE namespace=?
+              AND status='running'
+              AND started_at IS NOT NULL
+              AND started_at <= ?
+              AND attempt_count < max_attempts
+            """,
+            (now, now, namespace, cutoff_started_at),
+        )
+
+        dead_cursor = self.conn.execute(
+            """
+            UPDATE jobs
+            SET status='dead',
+                updated_at=?,
+                finished_at=?,
+                error_text='Stuck running job exceeded max attempts'
+            WHERE namespace=?
+              AND status='running'
+              AND started_at IS NOT NULL
+              AND started_at <= ?
+              AND attempt_count >= max_attempts
+            """,
+            (now, now, namespace, cutoff_started_at),
+        )
+        self.conn.commit()
+        return {
+            "requeued": int(requeue_cursor.rowcount),
+            "dead_lettered": int(dead_cursor.rowcount),
+        }
 
     def close(self) -> None:
         self.conn.close()
