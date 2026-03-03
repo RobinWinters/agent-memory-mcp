@@ -10,6 +10,7 @@ It gives an agent a structured way to:
 - save session events,
 - distill useful memory notes,
 - retrieve memory later,
+- export/import portable handoff bundles across models or IDEs,
 - propose and evaluate policy changes,
 - run async jobs with retries,
 - expose health/metrics for ops dashboards.
@@ -84,6 +85,8 @@ Memory:
 - `memory.append`
 - `memory.distill`
 - `memory.search`
+- `memory.handoff_export`
+- `memory.handoff_import`
 
 Policy:
 - `policy.get`
@@ -178,6 +181,19 @@ export AGENT_MEMORY_METRICS_TOKEN=your-token
 ./examples/sse_watch.sh default 1 true
 ```
 
+## Model-agnostic handoff
+
+Export context bundle from one environment:
+
+1. Call `memory.handoff_export(include_policy=true, include_events=true)`.
+2. Save returned JSON and optional `prompt_md`.
+3. Transfer to another model, IDE, or deployment.
+
+Import into another environment:
+
+1. Call `memory.handoff_import(handoff=<json>, import_policy=true, import_events=true)`.
+2. Continue with `memory.search` and normal `policy.*` workflow.
+
 ## Full environment reference
 
 Core:
@@ -253,4 +269,5 @@ Run a targeted suite:
 source .venv/bin/activate
 pytest tests/test_metrics_http.py -q
 pytest tests/test_golden_path_integration.py -q
+pytest tests/test_handoff.py -q
 ```

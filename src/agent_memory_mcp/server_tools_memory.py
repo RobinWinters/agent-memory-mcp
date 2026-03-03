@@ -62,3 +62,49 @@ def register_memory_tools(
         """Search memory notes using configured embeddings backend."""
         resolved_ns = authorize(namespace, "memory:read", api_key)
         return get_service().memory_search(query=query, k=k, namespace=resolved_ns)
+
+    @mcp.tool(name="memory.handoff_export")
+    def memory_handoff_export(
+        query: str | None = None,
+        k: int = 20,
+        include_policy: bool = True,
+        include_events: bool = False,
+        max_events_per_session: int = 20,
+        namespace: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Export portable memory/policy handoff payload for model-agnostic session transfer."""
+        resolved_ns = authorize(namespace, "memory:read", api_key)
+        if include_policy:
+            _ = authorize(resolved_ns, "policy:read", api_key)
+        return get_service().memory_handoff_export(
+            query=query,
+            k=k,
+            include_policy=include_policy,
+            include_events=include_events,
+            max_events_per_session=max_events_per_session,
+            namespace=resolved_ns,
+        )
+
+    @mcp.tool(name="memory.handoff_import")
+    def memory_handoff_import(
+        handoff: dict[str, Any],
+        session_id_prefix: str = "imported",
+        import_policy: bool = False,
+        import_events: bool = False,
+        max_events_per_session: int = 200,
+        namespace: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Import portable handoff payload into local memory/policy stores."""
+        resolved_ns = authorize(namespace, "memory:write", api_key)
+        if import_policy:
+            _ = authorize(resolved_ns, "policy:promote", api_key)
+        return get_service().memory_handoff_import(
+            handoff=handoff,
+            session_id_prefix=session_id_prefix,
+            import_policy=import_policy,
+            import_events=import_events,
+            max_events_per_session=max_events_per_session,
+            namespace=resolved_ns,
+        )

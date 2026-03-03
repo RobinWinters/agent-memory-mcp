@@ -7,6 +7,7 @@ from agent_memory_mcp.embeddings import Embedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
 from agent_memory_mcp.service_base import ServiceBaseMixin
 from agent_memory_mcp.service_constants import BASELINE_POLICY, SUPPORTED_JOB_TYPES
+from agent_memory_mcp.service_handoff import ServiceHandoffMixin
 from agent_memory_mcp.service_jobs import ServiceJobsMixin
 from agent_memory_mcp.service_memory import ServiceMemoryMixin
 from agent_memory_mcp.service_ops import ServiceOpsMixin
@@ -21,6 +22,7 @@ class MemoryPolicyService(
     ServiceBaseMixin,
     ServiceMemoryMixin,
     ServicePolicyMixin,
+    ServiceHandoffMixin,
     ServiceOpsMixin,
     ServiceJobsMixin,
 ):
