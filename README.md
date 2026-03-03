@@ -4,7 +4,7 @@ MCP server for agent memory + policy self-improvement workflows with namespace p
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
 background workers, observability, integrity verification, and export adapters.
 
-## Current build status (v0.11.0)
+## Current build status (v0.12.0)
 
 Implemented:
 
@@ -38,11 +38,16 @@ Implemented:
   - file-backed signing key rotation (`policy`/`audit`)
   - auth API-key upsert/disable management
   - runtime hot-reload into MCP server auth/signing state
+- HTTP metrics endpoint bridge:
+  - Prometheus scrape endpoint over HTTP
+  - OTel-style metrics endpoint over HTTP JSON
+  - optional bearer token guard
 
 ## Binaries
 
 - `agent-memory-mcp`: MCP server (stdio)
 - `agent-memory-worker`: background queue worker
+- `agent-memory-metrics-http`: HTTP bridge for metrics scraping/reads
 
 ## MCP tools
 
@@ -121,6 +126,13 @@ Integrity:
 - `AGENT_MEMORY_AUDIT_SIGNING_SECRET` (optional HMAC secret for audit chain; defaults to policy secret)
 - `AGENT_MEMORY_KEYRING_FILE` (optional JSON keyring path for runtime signing/auth key management)
 
+Metrics HTTP bridge:
+- `AGENT_MEMORY_METRICS_HTTP_HOST` (default: `127.0.0.1`)
+- `AGENT_MEMORY_METRICS_HTTP_PORT` (default: `9475`)
+- `AGENT_MEMORY_METRICS_WINDOW_MINUTES` (default: `60`)
+- `AGENT_MEMORY_METRICS_NAMESPACE` (default: `AGENT_MEMORY_NAMESPACE`)
+- `AGENT_MEMORY_METRICS_TOKEN` (optional bearer token for endpoint access)
+
 Auth:
 - `AGENT_MEMORY_AUTH_MODE` (`off` or `api_key`, default: `off`)
 - `AGENT_MEMORY_API_KEYS_JSON` (inline key-policy JSON)
@@ -157,6 +169,13 @@ Run worker daemon:
 ```bash
 source .venv/bin/activate
 agent-memory-worker
+```
+
+Run metrics HTTP bridge:
+
+```bash
+source .venv/bin/activate
+agent-memory-metrics-http
 ```
 
 Run server + worker together (two terminals) for automatic async processing.
@@ -207,6 +226,20 @@ Then manage keys through MCP:
 2. `ops.keyring_rotate(purpose="policy")` to rotate policy signing.
 3. `ops.keyring_upsert_api_key(...)` / `ops.keyring_disable_api_key(...)` to manage auth keys.
 
+## HTTP bridge usage
+
+Default endpoints:
+
+- `GET /metrics` (Prometheus text)
+- `GET /metrics/otel` (OTel-style JSON)
+- `GET /health` (queue health JSON)
+
+Optional query overrides:
+
+- `namespace=<name>`
+- `window_minutes=<int>`
+- `token=<value>` (only if token auth enabled)
+
 ## Test cadence
 
 ```bash
@@ -217,20 +250,21 @@ pytest tests/test_worker.py -q
 pytest tests/test_observability.py -q
 pytest tests/test_integrity.py -q
 pytest tests/test_metrics_export.py -q
+pytest tests/test_metrics_http.py -q
 pytest tests/test_keyring.py -q
 pytest -q
 ```
 
 ## Next phase
 
-1. Optional HTTP metrics endpoint bridge for direct Prometheus scraping.
-2. Add role-separated auth presets (`admin`, `writer`, `reader`) bootstrap helper.
+1. Add role-separated auth presets (`admin`, `writer`, `reader`) bootstrap helper.
+2. Optional SSE/streaming endpoint for real-time job queue updates.
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.11.0: keyring rotation and security ops tools"
+git commit -m "Build out v0.12.0: HTTP metrics bridge"
 git push
 ```

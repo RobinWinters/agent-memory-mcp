@@ -31,6 +31,11 @@ class Settings:
     policy_signing_secret: str | None
     audit_signing_secret: str | None
     keyring_file: str | None
+    metrics_http_host: str
+    metrics_http_port: int
+    metrics_http_window_minutes: int
+    metrics_http_namespace: str
+    metrics_http_token: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -70,6 +75,13 @@ class Settings:
         policy_signing_secret = os.getenv("AGENT_MEMORY_POLICY_SIGNING_SECRET")
         audit_signing_secret = os.getenv("AGENT_MEMORY_AUDIT_SIGNING_SECRET")
         keyring_file = os.getenv("AGENT_MEMORY_KEYRING_FILE")
+        metrics_http_host = os.getenv("AGENT_MEMORY_METRICS_HTTP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        metrics_http_port_raw = os.getenv("AGENT_MEMORY_METRICS_HTTP_PORT", "9475")
+        metrics_http_window_raw = os.getenv("AGENT_MEMORY_METRICS_WINDOW_MINUTES", "60")
+        metrics_http_namespace = (
+            os.getenv("AGENT_MEMORY_METRICS_NAMESPACE", default_namespace).strip() or default_namespace
+        )
+        metrics_http_token = os.getenv("AGENT_MEMORY_METRICS_TOKEN")
 
         try:
             threshold = float(threshold_raw)
@@ -103,6 +115,14 @@ class Settings:
             job_running_timeout_seconds = float(job_running_timeout_raw)
         except ValueError:
             job_running_timeout_seconds = 300.0
+        try:
+            metrics_http_port = int(metrics_http_port_raw)
+        except ValueError:
+            metrics_http_port = 9475
+        try:
+            metrics_http_window_minutes = int(metrics_http_window_raw)
+        except ValueError:
+            metrics_http_window_minutes = 60
 
         threshold = max(0.0, min(1.0, threshold))
         qdrant_timeout_seconds = max(0.5, qdrant_timeout_seconds)
@@ -112,6 +132,8 @@ class Settings:
         job_backoff_base_seconds = max(0.1, job_backoff_base_seconds)
         job_backoff_max_seconds = max(job_backoff_base_seconds, job_backoff_max_seconds)
         job_running_timeout_seconds = max(1.0, job_running_timeout_seconds)
+        metrics_http_port = min(65535, max(1, metrics_http_port))
+        metrics_http_window_minutes = max(1, metrics_http_window_minutes)
 
         if worker_namespaces_raw:
             parsed = [part.strip() for part in worker_namespaces_raw.split(",") if part.strip()]
@@ -148,4 +170,9 @@ class Settings:
             policy_signing_secret=policy_signing_secret,
             audit_signing_secret=audit_signing_secret,
             keyring_file=keyring_file,
+            metrics_http_host=metrics_http_host,
+            metrics_http_port=metrics_http_port,
+            metrics_http_window_minutes=metrics_http_window_minutes,
+            metrics_http_namespace=metrics_http_namespace,
+            metrics_http_token=metrics_http_token,
         )
