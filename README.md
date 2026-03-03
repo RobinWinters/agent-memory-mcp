@@ -23,6 +23,17 @@ Instead of letting prompts drift, you keep:
 - explicit policy versions (`propose -> evaluate -> promote`),
 - auditability and optional signing.
 
+## Release notes
+
+### v0.14.0 (March 3, 2026)
+
+- Added `/stream/jobs` SSE endpoint for live queue snapshots with token auth support.
+- Added end-to-end golden path integration test across MCP tools, worker, metrics, and SSE.
+- Added runnable examples:
+  - `examples/golden_path.py`
+  - `examples/sse_watch.sh`
+- Simplified README wording and removed user-specific local path examples.
+
 ## High-level architecture
 
 The system runs as three processes:
