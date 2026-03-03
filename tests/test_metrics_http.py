@@ -63,6 +63,26 @@ def http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int, dict
         return int(exc.code), dict(exc.headers.items()), exc.read()
 
 
+def parse_sse_events(body: bytes) -> list[dict[str, object]]:
+    text = body.decode("utf-8")
+    chunks = [chunk for chunk in text.split("\n\n") if chunk.strip()]
+    events: list[dict[str, object]] = []
+    for chunk in chunks:
+        event_name = "message"
+        event_id = ""
+        data_lines: list[str] = []
+        for line in chunk.splitlines():
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip()
+            elif line.startswith("id:"):
+                event_id = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].lstrip())
+        payload = json.loads("\n".join(data_lines)) if data_lines else None
+        events.append({"id": event_id, "event": event_name, "data": payload})
+    return events
+
+
 def test_metrics_http_endpoints(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
     seed_jobs(svc)
@@ -128,6 +148,18 @@ def test_metrics_http_token_auth(tmp_path: Path) -> None:
         status_with_query, _, _ = http_get(f"{base_url}/metrics?token=top-secret")
         assert status_with_query == 200
 
+        status_stream_no_token, _, _ = http_get(f"{base_url}/stream/jobs?max_events=1")
+        assert status_stream_no_token == 401
+
+        status_stream_with_header, _, _ = http_get(
+            f"{base_url}/stream/jobs?max_events=1",
+            headers={"Authorization": "Bearer top-secret"},
+        )
+        assert status_stream_with_header == 200
+
+        status_stream_with_query, _, _ = http_get(f"{base_url}/stream/jobs?max_events=1&token=top-secret")
+        assert status_stream_with_query == 200
+
 
 def test_metrics_http_query_overrides(tmp_path: Path) -> None:
     svc = make_service(tmp_path)
@@ -146,3 +178,42 @@ def test_metrics_http_query_overrides(tmp_path: Path) -> None:
         assert status == 200
         text = body.decode("utf-8")
         assert 'namespace="tenant-z"' in text
+
+
+def test_metrics_http_job_stream_sse(tmp_path: Path) -> None:
+    svc = make_service(tmp_path)
+    seed_jobs(svc)
+
+    bridge = MetricsHTTPBridge(
+        host="127.0.0.1",
+        port=0,
+        default_namespace="default",
+        service_factory=lambda: make_service(tmp_path),
+        default_window_minutes=60,
+        token=None,
+    )
+    with running_bridge(bridge) as base_url:
+        status, headers, body = http_get(
+            (
+                f"{base_url}/stream/jobs"
+                "?namespace=tenant-z&window_minutes=5&interval_seconds=0.01&include_metrics=true&max_events=2"
+            )
+        )
+        assert status == 200
+        assert "text/event-stream" in headers.get("Content-Type", "")
+
+        events = parse_sse_events(body)
+        assert len(events) == 2
+        assert events[0]["event"] == "jobs.snapshot"
+        assert events[0]["id"] == "1"
+        assert events[1]["id"] == "2"
+
+        first_payload = events[0]["data"]
+        assert isinstance(first_payload, dict)
+        assert first_payload["namespace"] == "tenant-z"
+        assert first_payload["window_minutes"] == 5
+        assert first_payload["event_index"] == 1
+        assert "health" in first_payload
+        assert "queue" in first_payload["health"]
+        assert "metrics" in first_payload
+        assert first_payload["metrics"]["window_minutes"] == 5

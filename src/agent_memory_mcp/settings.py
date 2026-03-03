@@ -35,6 +35,8 @@ class Settings:
     metrics_http_port: int
     metrics_http_window_minutes: int
     metrics_http_namespace: str
+    metrics_http_stream_interval_seconds: float
+    metrics_http_stream_include_metrics: bool
     metrics_http_token: str | None
 
     @classmethod
@@ -81,6 +83,11 @@ class Settings:
         metrics_http_namespace = (
             os.getenv("AGENT_MEMORY_METRICS_NAMESPACE", default_namespace).strip() or default_namespace
         )
+        metrics_http_stream_interval_raw = os.getenv("AGENT_MEMORY_METRICS_STREAM_INTERVAL_SECONDS", "2.0")
+        metrics_http_stream_include_metrics = parse_bool(
+            os.getenv("AGENT_MEMORY_METRICS_STREAM_INCLUDE_METRICS"),
+            default=False,
+        )
         metrics_http_token = os.getenv("AGENT_MEMORY_METRICS_TOKEN")
 
         try:
@@ -123,6 +130,10 @@ class Settings:
             metrics_http_window_minutes = int(metrics_http_window_raw)
         except ValueError:
             metrics_http_window_minutes = 60
+        try:
+            metrics_http_stream_interval_seconds = float(metrics_http_stream_interval_raw)
+        except ValueError:
+            metrics_http_stream_interval_seconds = 2.0
 
         threshold = max(0.0, min(1.0, threshold))
         qdrant_timeout_seconds = max(0.5, qdrant_timeout_seconds)
@@ -134,6 +145,7 @@ class Settings:
         job_running_timeout_seconds = max(1.0, job_running_timeout_seconds)
         metrics_http_port = min(65535, max(1, metrics_http_port))
         metrics_http_window_minutes = max(1, metrics_http_window_minutes)
+        metrics_http_stream_interval_seconds = max(0.05, metrics_http_stream_interval_seconds)
 
         if worker_namespaces_raw:
             parsed = [part.strip() for part in worker_namespaces_raw.split(",") if part.strip()]
@@ -174,5 +186,7 @@ class Settings:
             metrics_http_port=metrics_http_port,
             metrics_http_window_minutes=metrics_http_window_minutes,
             metrics_http_namespace=metrics_http_namespace,
+            metrics_http_stream_interval_seconds=metrics_http_stream_interval_seconds,
+            metrics_http_stream_include_metrics=metrics_http_stream_include_metrics,
             metrics_http_token=metrics_http_token,
         )
