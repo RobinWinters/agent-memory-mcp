@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from agent_memory_mcp.handoff_schema import get_handoff_json_schema
 from agent_memory_mcp.runtime_bootstrap import build_service_from_settings, load_settings_from_env
 
 
@@ -88,6 +89,18 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_schema(args: argparse.Namespace) -> int:
+    payload = get_handoff_json_schema()
+    serialized = _json_dump(payload, pretty=args.pretty) + "\n"
+    if args.output == "-":
+        sys.stdout.write(serialized)
+    else:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(serialized, encoding="utf-8")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-memory-handoff",
@@ -141,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
     import_parser.set_defaults(handler=_cmd_import)
+
+    schema_parser = subparsers.add_parser("schema", help="Print bundled handoff JSON Schema.")
+    schema_parser.add_argument("--output", default="-", help="Output schema file path, or '-' for stdout.")
+    schema_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+    schema_parser.set_defaults(handler=_cmd_schema)
 
     return parser
 

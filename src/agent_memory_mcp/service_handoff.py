@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from agent_memory_mcp.handoff_schema import HANDOFF_SCHEMA_ID, validate_handoff_payload
 from agent_memory_mcp.models import utc_now_iso
 
 
@@ -148,7 +149,7 @@ class ServiceHandoffMixin:
         )
 
         return {
-            "schema": "agent-memory-handoff.v1",
+            "schema": HANDOFF_SCHEMA_ID,
             "generated_at": now,
             "namespace": ns,
             "query": clean_query or None,
@@ -173,8 +174,7 @@ class ServiceHandoffMixin:
         max_events_per_session: int = 200,
         namespace: str | None = None,
     ) -> dict[str, Any]:
-        if not isinstance(handoff, dict):
-            raise ValueError("handoff must be a JSON object")
+        validate_handoff_payload(handoff)
 
         ns = self._ns(namespace)
         clean_prefix = session_id_prefix.strip() or "imported"

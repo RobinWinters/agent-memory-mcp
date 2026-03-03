@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import HashEmbedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
@@ -109,3 +111,15 @@ def test_handoff_import_into_new_service(tmp_path: Path) -> None:
 
     imported_events = target.db.list_events(namespace=target_ns, session_id="s1")
     assert len(imported_events) >= 2
+
+
+def test_handoff_import_rejects_unsupported_schema(tmp_path: Path) -> None:
+    source = make_service(tmp_path / "source.db")
+    target = make_service(tmp_path / "target.db")
+    seed_memory_and_policy(source, namespace="source-a")
+
+    handoff = source.memory_handoff_export(k=3, include_policy=True, namespace="source-a")
+    handoff["schema"] = "agent-memory-handoff.v999"
+
+    with pytest.raises(ValueError, match="unsupported handoff schema"):
+        target.memory_handoff_import(handoff=handoff, namespace="target-b")

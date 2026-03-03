@@ -7,6 +7,7 @@ from agent_memory_mcp.db import Database
 from agent_memory_mcp.embeddings import HashEmbedder
 from agent_memory_mcp.evaluator import PolicyEvaluator
 from agent_memory_mcp.handoff_cli import main as handoff_main
+from agent_memory_mcp.handoff_schema import HANDOFF_SCHEMA_ID
 from agent_memory_mcp.service import MemoryPolicyService
 from agent_memory_mcp.vector_store import LocalMemoryVectorStore
 
@@ -119,3 +120,14 @@ def test_handoff_cli_export_import_roundtrip(tmp_path: Path, monkeypatch) -> Non
         assert len(events) >= 2
     finally:
         target.db.close()
+
+
+def test_handoff_cli_schema_command(tmp_path: Path) -> None:
+    schema_path = tmp_path / "handoff.schema.json"
+    code = handoff_main(["schema", "--output", str(schema_path), "--pretty"])
+    assert code == 0
+    assert schema_path.exists()
+
+    payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    assert payload["$id"] == HANDOFF_SCHEMA_ID
+    assert payload["$schema"] == "https://json-schema.org/draft/2020-12/schema"

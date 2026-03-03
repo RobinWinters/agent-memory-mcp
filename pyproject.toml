@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.6.0",
   "httpx>=0.28.0",
+  "jsonschema>=4.21.0",
   "pydantic>=2.6.0",
   "qdrant-client>=1.9.0",
 ]
@@ -25,6 +26,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+agent_memory_mcp = ["schemas/*.json"]
 
 [project.scripts]
 agent-memory-mcp = "agent_memory_mcp.server:main"
