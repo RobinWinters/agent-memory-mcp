@@ -6,8 +6,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Protocol
 
-from agent_memory_mcp.factory import build_service
-from agent_memory_mcp.settings import Settings
+from agent_memory_mcp.runtime_bootstrap import build_service_from_env
 
 
 class JobRunnerService(Protocol):
@@ -135,8 +134,7 @@ def _install_signal_handlers(stop_event: threading.Event) -> None:
 
 
 def main() -> None:
-    settings = Settings.from_env()
-    service = build_service(settings=settings)
+    settings, service = build_service_from_env()
     stop_event = threading.Event()
     _install_signal_handlers(stop_event=stop_event)
 

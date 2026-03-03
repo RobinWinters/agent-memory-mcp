@@ -9,9 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from agent_memory_mcp.factory import build_service
+from agent_memory_mcp.runtime_bootstrap import build_service_from_settings, load_settings_from_env
 from agent_memory_mcp.service import MemoryPolicyService
-from agent_memory_mcp.settings import Settings
 
 
 def _parse_positive_int(value: str | None, default: int) -> int:
@@ -167,9 +166,9 @@ def _install_shutdown_handlers(server: ThreadingHTTPServer) -> None:
 
 
 def main() -> None:
-    settings = Settings.from_env()
+    settings = load_settings_from_env()
     bridge = MetricsHTTPBridge(
-        service_factory=lambda: build_service(settings=settings),
+        service_factory=lambda: build_service_from_settings(settings=settings),
         host=settings.metrics_http_host,
         port=settings.metrics_http_port,
         default_namespace=settings.metrics_http_namespace,

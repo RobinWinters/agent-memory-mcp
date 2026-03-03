@@ -4,6 +4,24 @@ MCP server for agent memory + policy self-improvement workflows with namespace p
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
 background workers, observability, integrity verification, and export adapters.
 
+## Purpose
+
+This system is for agents/models that want durable memory plus controlled self-improvement:
+
+- Capture raw session events as immutable source data.
+- Distill sessions into retrievable memory notes.
+- Propose/evaluate/promote policy updates with explicit gates.
+- Serve all operations through MCP tools with namespace isolation and auth.
+
+## End-to-end flow
+
+1. Append raw events with `memory.append`.
+2. Distill sessions into vector-searchable notes with `memory.distill`.
+3. Retrieve prior context with `memory.search`.
+4. Propose policy deltas with `policy.propose`.
+5. Evaluate with `policy.evaluate`.
+6. Promote passing changes with `policy.promote` (or rollback with `policy.rollback`).
+
 ## Current build status (v0.12.0)
 
 Implemented:
@@ -42,6 +60,24 @@ Implemented:
   - Prometheus scrape endpoint over HTTP
   - OTel-style metrics endpoint over HTTP JSON
   - optional bearer token guard
+- Internal architecture refactor on `main`:
+  - DB layer split into domain modules (`db_*`)
+  - MCP tool registration split by domain (`server_tools_*`)
+  - service layer split by domain (`service_*`)
+  - runtime state centralized in `AppContext`
+
+## Architecture snapshot
+
+- Core domain:
+  - `service.py` (facade) + `service_base.py`, `service_memory.py`, `service_policy.py`, `service_jobs.py`, `service_ops.py`
+  - `db.py` (facade) + `db_schema.py`, `db_memory.py`, `db_policy.py`, `db_jobs.py`, `db_audit.py`
+- Runtime wiring:
+  - `app_context.py` (settings/service/auth/keyring runtime state for MCP server)
+  - `runtime_bootstrap.py` (shared env/settings/service bootstrap helpers)
+- Entrypoints:
+  - `server.py` (MCP process bootstrap)
+  - `worker.py` (queue worker loop)
+  - `metrics_http.py` (HTTP metrics bridge)
 
 ## Binaries
 
@@ -157,6 +193,30 @@ pip install ".[dev]"
 pytest -q
 ```
 
+Basic local run (3 processes):
+
+```bash
+source .venv/bin/activate
+agent-memory-mcp
+```
+
+```bash
+source .venv/bin/activate
+agent-memory-worker
+```
+
+```bash
+source .venv/bin/activate
+agent-memory-metrics-http
+```
+
+Then:
+
+1. Send events to `memory.append`.
+2. Distill with `memory.distill`.
+3. Query with `memory.search`.
+4. Iterate policy via `policy.propose` -> `policy.evaluate` -> `policy.promote`.
+
 Run MCP server:
 
 ```bash
@@ -252,6 +312,7 @@ pytest tests/test_integrity.py -q
 pytest tests/test_metrics_export.py -q
 pytest tests/test_metrics_http.py -q
 pytest tests/test_keyring.py -q
+pytest tests/test_app_context.py -q
 pytest -q
 ```
 
@@ -265,6 +326,6 @@ pytest -q
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.12.0: HTTP metrics bridge"
+git commit -m "your change summary"
 git push
 ```
