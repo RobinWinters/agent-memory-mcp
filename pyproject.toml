@@ -30,3 +30,4 @@ where = ["src"]
 agent-memory-mcp = "agent_memory_mcp.server:main"
 agent-memory-worker = "agent_memory_mcp.worker:main"
 agent-memory-metrics-http = "agent_memory_mcp.metrics_http:main"
+agent-memory-handoff = "agent_memory_mcp.handoff_cli:main"

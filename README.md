@@ -194,6 +194,26 @@ Import into another environment:
 1. Call `memory.handoff_import(handoff=<json>, import_policy=true, import_events=true)`.
 2. Continue with `memory.search` and normal `policy.*` workflow.
 
+CLI alternative:
+
+```bash
+agent-memory-handoff export \
+  --db ./data/agent_memory.db \
+  --namespace default \
+  --include-events \
+  --output ./handoff.json \
+  --prompt-output ./handoff.md \
+  --pretty
+
+agent-memory-handoff import \
+  --db ./data/agent_memory_target.db \
+  --namespace default \
+  --input ./handoff.json \
+  --import-policy \
+  --import-events \
+  --pretty
+```
+
 ## Full environment reference
 
 Core:
@@ -270,4 +290,5 @@ source .venv/bin/activate
 pytest tests/test_metrics_http.py -q
 pytest tests/test_golden_path_integration.py -q
 pytest tests/test_handoff.py -q
+pytest tests/test_handoff_cli.py -q
 ```
