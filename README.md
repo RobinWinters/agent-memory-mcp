@@ -1,202 +1,43 @@
 # agent-memory-mcp
 
-MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
-pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
-background workers, observability, integrity verification, and export adapters.
+`agent-memory-mcp` is a local-first memory and policy service for AI agents.
 
-## Purpose
+It gives an agent a structured way to:
+- save session events,
+- distill useful memory notes,
+- retrieve memory later,
+- propose and evaluate policy changes,
+- run async jobs with retries,
+- expose health/metrics for ops dashboards.
 
-This system is for agents/models that want durable memory plus controlled self-improvement:
+## What this is for
 
-- Capture raw session events as immutable source data.
-- Distill sessions into retrievable memory notes.
-- Propose/evaluate/promote policy updates with explicit gates.
-- Serve all operations through MCP tools with namespace isolation and auth.
+Use this when you want agent behavior to improve over time without losing control.
 
-## End-to-end flow
+Instead of letting prompts drift, you keep:
+- durable memory (events + distilled notes),
+- explicit policy versions (`propose -> evaluate -> promote`),
+- auditability and optional signing.
 
-1. Append raw events with `memory.append`.
-2. Distill sessions into vector-searchable notes with `memory.distill`.
-3. Retrieve prior context with `memory.search`.
-4. Propose policy deltas with `policy.propose`.
-5. Evaluate with `policy.evaluate`.
-6. Promote passing changes with `policy.promote` (or rollback with `policy.rollback`).
+## High-level architecture
 
-## Current build status (v0.13.0)
-
-Implemented:
-
-- Immutable event ingest and session distillation into memory notes.
-- Namespace-aware partitioning for memory, policy, jobs, and queue operations.
-- Pluggable embedding backend:
-  - `hash` (default, offline deterministic)
-  - `openai` (remote embeddings API)
-- Pluggable vector search backend:
-  - `sqlite` (default, local full-scan)
-  - `qdrant` (external ANN)
-- Structured policy evaluator with weighted checks + regression replay.
-- Policy lifecycle with gating:
-  - `propose` -> `evaluate` -> `promote` -> `rollback`
-- API-key auth + ACL scopes.
-- Durable async jobs + background worker daemon.
-- Reliability hardening:
-  - retries, backoff, dead-lettering, stuck-job recovery
-- Observability:
-  - queue health snapshots
-  - throughput/success/failure metrics
-  - queue/run/end-to-end latency aggregates
-- Integrity hardening:
-  - policy content digest + optional HMAC signatures
-  - append-only audit hash chain
-  - audit chain + policy signature verification
-- Metrics export adapters:
-  - Prometheus exposition text
-  - OpenTelemetry-style JSON payload
-- Keyring-based security management:
-  - file-backed signing key rotation (`policy`/`audit`)
-  - auth API-key upsert/disable management
-  - auth preset bootstrap (`admin`/`writer`/`reader`)
-  - runtime hot-reload into MCP server auth/signing state
-- HTTP metrics endpoint bridge:
-  - Prometheus scrape endpoint over HTTP
-  - OTel-style metrics endpoint over HTTP JSON
-  - optional bearer token guard
-- Internal architecture refactor on `main`:
-  - DB layer split into domain modules (`db_*`)
-  - MCP tool registration split by domain (`server_tools_*`)
-  - service layer split by domain (`service_*`)
-  - runtime state centralized in `AppContext`
-
-## Architecture snapshot
-
-- Core domain:
-  - `service.py` (facade) + `service_base.py`, `service_memory.py`, `service_policy.py`, `service_jobs.py`, `service_ops.py`
-  - `db.py` (facade) + `db_schema.py`, `db_memory.py`, `db_policy.py`, `db_jobs.py`, `db_audit.py`
-- Runtime wiring:
-  - `app_context.py` (settings/service/auth/keyring runtime state for MCP server)
-  - `runtime_bootstrap.py` (shared env/settings/service bootstrap helpers)
-- Entrypoints:
-  - `server.py` (MCP process bootstrap)
-  - `worker.py` (queue worker loop)
-  - `metrics_http.py` (HTTP metrics bridge)
-
-## Binaries
-
-- `agent-memory-mcp`: MCP server (stdio)
-- `agent-memory-worker`: background queue worker
-- `agent-memory-metrics-http`: HTTP bridge for metrics scraping/reads
-
-## MCP tools
-
-- `memory.append(session_id, role, content, metadata?, namespace?, api_key?)`
-- `memory.distill(session_id, max_lines=6, async_mode=false, namespace?, api_key?)`
-- `memory.search(query, k=5, namespace?, api_key?)`
-- `policy.get(active_version=true, namespace?, api_key?)`
-- `policy.propose(delta_md, evidence_refs=[], namespace?, api_key?)`
-- `policy.evaluate(proposal_id, async_mode=false, namespace?, api_key?)`
-- `policy.promote(proposal_id, namespace?, api_key?)`
-- `policy.rollback(version_id, namespace?, api_key?)`
-- `jobs.submit(job_type, payload, namespace?, api_key?)`
-- `jobs.run_pending(limit=1, namespace?, api_key?)`
-- `jobs.status(job_id, namespace?, api_key?)`
-- `jobs.result(job_id, namespace?, api_key?)`
-- `ops.health(namespace?, api_key?)`
-- `ops.metrics(window_minutes=60, namespace?, api_key?)`
-- `ops.metrics_prometheus(window_minutes=60, namespace?, api_key?)`
-- `ops.metrics_otel(window_minutes=60, namespace?, api_key?)`
-- `ops.audit_recent(limit=50, namespace?, api_key?)`
-- `ops.audit_verify(limit=1000, namespace?, api_key?)`
-- `ops.keyring_status(namespace?, api_key?)`
-- `ops.keyring_reload(namespace?, api_key?)`
-- `ops.keyring_rotate(purpose, secret?, key_id?, disable_previous=false, namespace?, api_key?)`
-- `ops.keyring_upsert_api_key(managed_api_key, namespaces, scopes, enabled=true, label?, namespace?, api_key?)`
-- `ops.keyring_disable_api_key(managed_api_key, namespace?, api_key?)`
-- `ops.keyring_list_presets(namespace?, api_key?)`
-- `ops.keyring_apply_preset(preset, managed_api_key, namespaces?=[], enabled=true, label?, namespace?, api_key?)`
-
-Supported `job_type` values:
-- `memory.distill`
-- `policy.evaluate`
-
-## Job lifecycle semantics
-
-Persisted statuses:
-- `queued`
-- `running`
-- `succeeded`
-- `dead`
-
-`jobs.run_pending` also reports:
-- `retried`
-- `dead`
-- `recovered_stuck` (`requeued`, `dead_lettered`)
-
-## Environment
-
-Core:
-- `AGENT_MEMORY_DB` (default: `./data/agent_memory.db`)
-- `AGENT_MEMORY_NAMESPACE` (default: `default`)
-- `AGENT_MEMORY_EMBEDDING_BACKEND` (`hash` or `openai`, default: `hash`)
-- `OPENAI_API_KEY` (required when backend is `openai`)
-- `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`)
-- `AGENT_MEMORY_POLICY_PASS_THRESHOLD` (default: `0.75`)
-
-Vector backend:
-- `AGENT_MEMORY_VECTOR_BACKEND` (`sqlite` or `qdrant`, default: `sqlite`)
-- `QDRANT_URL` (default: `http://localhost:6333`)
-- `QDRANT_API_KEY` (optional)
-- `QDRANT_COLLECTION` (default: `agent_memory`)
-- `QDRANT_TIMEOUT_SECONDS` (default: `10`)
-- `QDRANT_AUTO_CREATE_COLLECTION` (`true`/`false`, default: `true`)
-
-Worker:
-- `AGENT_MEMORY_WORKER_POLL_SECONDS` (default: `1.0`)
-- `AGENT_MEMORY_WORKER_BATCH_SIZE` (default: `20`)
-- `AGENT_MEMORY_WORKER_NAMESPACES` (comma-separated list, default: `AGENT_MEMORY_NAMESPACE`)
-
-Job reliability:
-- `AGENT_MEMORY_JOB_MAX_ATTEMPTS` (default: `3`)
-- `AGENT_MEMORY_JOB_BACKOFF_BASE_SECONDS` (default: `2.0`)
-- `AGENT_MEMORY_JOB_BACKOFF_MAX_SECONDS` (default: `300.0`)
-- `AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS` (default: `300.0`)
-
-Integrity:
-- `AGENT_MEMORY_POLICY_SIGNING_SECRET` (optional HMAC secret for policy signatures)
-- `AGENT_MEMORY_AUDIT_SIGNING_SECRET` (optional HMAC secret for audit chain; defaults to policy secret)
-- `AGENT_MEMORY_KEYRING_FILE` (optional JSON keyring path for runtime signing/auth key management)
-
-Metrics HTTP bridge:
-- `AGENT_MEMORY_METRICS_HTTP_HOST` (default: `127.0.0.1`)
-- `AGENT_MEMORY_METRICS_HTTP_PORT` (default: `9475`)
-- `AGENT_MEMORY_METRICS_WINDOW_MINUTES` (default: `60`)
-- `AGENT_MEMORY_METRICS_NAMESPACE` (default: `AGENT_MEMORY_NAMESPACE`)
-- `AGENT_MEMORY_METRICS_TOKEN` (optional bearer token for endpoint access)
-
-Auth:
-- `AGENT_MEMORY_AUTH_MODE` (`off` or `api_key`, default: `off`)
-- `AGENT_MEMORY_API_KEYS_JSON` (inline key-policy JSON)
-- `AGENT_MEMORY_API_KEYS_FILE` (path to JSON file, preferred in production)
-
-Auth scope families:
-- `memory:*`
-- `policy:*`
-- `jobs:*`
-- `security:*`
-
-`ops.*` tools use `jobs:read` scope.
-`ops.keyring_*` tools use `security:read`/`security:manage` scopes.
+The system runs as three processes:
+1. `agent-memory-mcp` -> MCP server (tools over stdio)
+2. `agent-memory-worker` -> async job worker
+3. `agent-memory-metrics-http` -> HTTP health/metrics/SSE bridge
 
 ## Quickstart
 
 ```bash
-cd <repo-root>
+git clone <repo-url>
+cd agent-memory-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 pip install ".[dev]"
 pytest -q
 ```
 
-Basic local run (3 processes):
+Start the services in separate terminals:
 
 ```bash
 source .venv/bin/activate
@@ -213,125 +54,165 @@ source .venv/bin/activate
 agent-memory-metrics-http
 ```
 
-Then:
+## Typical usage flow
 
-1. Send events to `memory.append`.
-2. Distill with `memory.distill`.
-3. Query with `memory.search`.
-4. Iterate policy via `policy.propose` -> `policy.evaluate` -> `policy.promote`.
+1. Call `memory.append` to record raw events.
+2. Call `memory.distill` to create memory notes.
+3. Call `memory.search` to retrieve relevant context.
+4. Call `policy.propose`.
+5. Call `policy.evaluate`.
+6. Call `policy.promote` (or `policy.rollback`).
 
-Run MCP server:
+## Core MCP tools
 
-```bash
-source .venv/bin/activate
-agent-memory-mcp
-```
+Memory:
+- `memory.append`
+- `memory.distill`
+- `memory.search`
 
-Run worker daemon:
+Policy:
+- `policy.get`
+- `policy.propose`
+- `policy.evaluate`
+- `policy.promote`
+- `policy.rollback`
 
-```bash
-source .venv/bin/activate
-agent-memory-worker
-```
+Jobs:
+- `jobs.submit`
+- `jobs.run_pending`
+- `jobs.status`
+- `jobs.result`
 
-Run metrics HTTP bridge:
+Ops:
+- `ops.health`
+- `ops.metrics`
+- `ops.metrics_prometheus`
+- `ops.metrics_otel`
+- `ops.audit_recent`
+- `ops.audit_verify`
+- `ops.keyring_status`
+- `ops.keyring_reload`
+- `ops.keyring_rotate`
+- `ops.keyring_upsert_api_key`
+- `ops.keyring_disable_api_key`
+- `ops.keyring_list_presets`
+- `ops.keyring_apply_preset`
 
-```bash
-source .venv/bin/activate
-agent-memory-metrics-http
-```
-
-Run server + worker together (two terminals) for automatic async processing.
-
-## Qdrant setup
-
-Start Qdrant locally:
-
-```bash
-docker run -p 6333:6333 qdrant/qdrant
-```
-
-Run with Qdrant backend:
-
-```bash
-export AGENT_MEMORY_VECTOR_BACKEND=qdrant
-export QDRANT_URL=http://localhost:6333
-export QDRANT_COLLECTION=agent_memory
-agent-memory-mcp
-```
-
-Qdrant handles vector lookup while SQLite remains canonical source for memory/policy/job records.
-
-## Metrics export usage
-
-Prometheus format via MCP:
-
-1. Call `ops.metrics_prometheus(window_minutes=60)`.
-2. Read returned `text` field and expose through your scrape bridge.
-
-OTel-style JSON via MCP:
-
-1. Call `ops.metrics_otel(window_minutes=60)`.
-2. Forward returned `payload` into your telemetry pipeline adapter.
-
-## Keyring quickstart
-
-Enable file-backed key management:
-
-```bash
-export AGENT_MEMORY_KEYRING_FILE=<repo-root>/data/keyring.json
-agent-memory-mcp
-```
-
-Then manage keys through MCP:
-
-1. `ops.keyring_status()` to inspect current state.
-2. `ops.keyring_rotate(purpose="policy")` to rotate policy signing.
-3. `ops.keyring_upsert_api_key(...)` / `ops.keyring_disable_api_key(...)` to manage auth keys.
-4. `ops.keyring_list_presets()` to inspect built-in ACL role presets.
-5. `ops.keyring_apply_preset(preset="writer", managed_api_key="...")` to bootstrap a key quickly.
-
-## HTTP bridge usage
+## HTTP ops endpoints
 
 Default endpoints:
+- `GET /health` -> queue health JSON
+- `GET /metrics` -> Prometheus text
+- `GET /metrics/otel` -> OTel-style JSON
+- `GET /stream/jobs` -> Server-Sent Events stream for live queue snapshots
 
-- `GET /metrics` (Prometheus text)
-- `GET /metrics/otel` (OTel-style JSON)
-- `GET /health` (queue health JSON)
+Common query params:
+- `namespace`
+- `window_minutes`
+- `token` (if token auth is enabled)
 
-Optional query overrides:
+SSE-specific query params (`/stream/jobs`):
+- `interval_seconds`
+- `include_metrics`
+- `max_events`
 
-- `namespace=<name>`
-- `window_minutes=<int>`
-- `token=<value>` (only if token auth enabled)
+Example:
 
-## Test cadence
+```bash
+curl -N "http://127.0.0.1:9475/stream/jobs?interval_seconds=1&include_metrics=true"
+```
+
+## Minimal environment variables
+
+Start with these:
+- `AGENT_MEMORY_DB` (default: `./data/agent_memory.db`)
+- `AGENT_MEMORY_NAMESPACE` (default: `default`)
+- `AGENT_MEMORY_EMBEDDING_BACKEND` (`hash` or `openai`, default: `hash`)
+- `AGENT_MEMORY_VECTOR_BACKEND` (`sqlite` or `qdrant`, default: `sqlite`)
+
+If using OpenAI embeddings:
+- `OPENAI_API_KEY`
+- `OPENAI_EMBEDDING_MODEL` (default: `text-embedding-3-small`)
+
+If enabling API-key auth:
+- `AGENT_MEMORY_AUTH_MODE=api_key`
+- `AGENT_MEMORY_API_KEYS_FILE=/path/to/api-keys.json` (or `AGENT_MEMORY_API_KEYS_JSON`)
+
+If enabling keyring-backed signing/auth management:
+- `AGENT_MEMORY_KEYRING_FILE=/path/to/keyring.json`
+
+## Full environment reference
+
+Core:
+- `AGENT_MEMORY_DB`
+- `AGENT_MEMORY_NAMESPACE`
+- `AGENT_MEMORY_EMBEDDING_BACKEND`
+- `OPENAI_API_KEY`
+- `OPENAI_EMBEDDING_MODEL`
+- `AGENT_MEMORY_POLICY_PASS_THRESHOLD`
+
+Vector backend:
+- `AGENT_MEMORY_VECTOR_BACKEND`
+- `QDRANT_URL`
+- `QDRANT_API_KEY`
+- `QDRANT_COLLECTION`
+- `QDRANT_TIMEOUT_SECONDS`
+- `QDRANT_AUTO_CREATE_COLLECTION`
+
+Worker:
+- `AGENT_MEMORY_WORKER_POLL_SECONDS`
+- `AGENT_MEMORY_WORKER_BATCH_SIZE`
+- `AGENT_MEMORY_WORKER_NAMESPACES`
+
+Job reliability:
+- `AGENT_MEMORY_JOB_MAX_ATTEMPTS`
+- `AGENT_MEMORY_JOB_BACKOFF_BASE_SECONDS`
+- `AGENT_MEMORY_JOB_BACKOFF_MAX_SECONDS`
+- `AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS`
+
+Integrity:
+- `AGENT_MEMORY_POLICY_SIGNING_SECRET`
+- `AGENT_MEMORY_AUDIT_SIGNING_SECRET`
+- `AGENT_MEMORY_KEYRING_FILE`
+
+Metrics HTTP bridge:
+- `AGENT_MEMORY_METRICS_HTTP_HOST`
+- `AGENT_MEMORY_METRICS_HTTP_PORT`
+- `AGENT_MEMORY_METRICS_WINDOW_MINUTES`
+- `AGENT_MEMORY_METRICS_NAMESPACE`
+- `AGENT_MEMORY_METRICS_STREAM_INTERVAL_SECONDS`
+- `AGENT_MEMORY_METRICS_STREAM_INCLUDE_METRICS`
+- `AGENT_MEMORY_METRICS_TOKEN`
+
+Auth:
+- `AGENT_MEMORY_AUTH_MODE`
+- `AGENT_MEMORY_API_KEYS_JSON`
+- `AGENT_MEMORY_API_KEYS_FILE`
+
+## Auth scopes
+
+Scope families:
+- `memory:*`
+- `policy:*`
+- `jobs:*`
+- `security:*`
+
+Notes:
+- `ops.*` requires `jobs:read`
+- `ops.keyring_*` requires `security:read` or `security:manage`
+
+## Testing
+
+Run all tests:
 
 ```bash
 source .venv/bin/activate
-pytest tests/test_service.py -q
-pytest tests/test_jobs.py -q
-pytest tests/test_worker.py -q
-pytest tests/test_observability.py -q
-pytest tests/test_integrity.py -q
-pytest tests/test_metrics_export.py -q
-pytest tests/test_metrics_http.py -q
-pytest tests/test_keyring.py -q
-pytest tests/test_auth_presets.py -q
-pytest tests/test_app_context.py -q
 pytest -q
 ```
 
-## Next phase
-
-1. Optional SSE/streaming endpoint for real-time job queue updates.
-2. End-to-end golden-path integration test + sample client scripts.
-
-## Publish / update GitHub
+Run a targeted suite:
 
 ```bash
-cd <repo-root>
-git add .
-git commit -m "your change summary"
-git push
+source .venv/bin/activate
+pytest tests/test_metrics_http.py -q
 ```
