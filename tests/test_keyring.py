@@ -105,3 +105,20 @@ def test_keyring_status_counts(tmp_path: Path) -> None:
     assert status["signing"]["audit"]["enabled_keys"] == 1
     assert status["auth"]["total_api_keys"] == 2
     assert status["auth"]["enabled_api_keys"] == 1
+
+
+def test_apply_auth_preset_writer(tmp_path: Path) -> None:
+    keyring = FileKeyring(str(tmp_path / "keyring.json"))
+    keyring.ensure_exists()
+
+    applied = keyring.apply_auth_preset(
+        preset="writer",
+        api_key="writer-key",
+        namespaces=["tenant-a"],
+        label="writer role",
+    )
+    assert applied["preset"] == "writer"
+    assert applied["api_key"] == "writer-key"
+    assert applied["namespaces"] == ["tenant-a"]
+    assert "memory:write" in applied["scopes"]
+    assert "policy:promote" not in applied["scopes"]

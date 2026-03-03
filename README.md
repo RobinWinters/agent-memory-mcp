@@ -22,7 +22,7 @@ This system is for agents/models that want durable memory plus controlled self-i
 5. Evaluate with `policy.evaluate`.
 6. Promote passing changes with `policy.promote` (or rollback with `policy.rollback`).
 
-## Current build status (v0.12.1)
+## Current build status (v0.13.0)
 
 Implemented:
 
@@ -55,6 +55,7 @@ Implemented:
 - Keyring-based security management:
   - file-backed signing key rotation (`policy`/`audit`)
   - auth API-key upsert/disable management
+  - auth preset bootstrap (`admin`/`writer`/`reader`)
   - runtime hot-reload into MCP server auth/signing state
 - HTTP metrics endpoint bridge:
   - Prometheus scrape endpoint over HTTP
@@ -110,6 +111,8 @@ Implemented:
 - `ops.keyring_rotate(purpose, secret?, key_id?, disable_previous=false, namespace?, api_key?)`
 - `ops.keyring_upsert_api_key(managed_api_key, namespaces, scopes, enabled=true, label?, namespace?, api_key?)`
 - `ops.keyring_disable_api_key(managed_api_key, namespace?, api_key?)`
+- `ops.keyring_list_presets(namespace?, api_key?)`
+- `ops.keyring_apply_preset(preset, managed_api_key, namespaces?=[], enabled=true, label?, namespace?, api_key?)`
 
 Supported `job_type` values:
 - `memory.distill`
@@ -285,6 +288,8 @@ Then manage keys through MCP:
 1. `ops.keyring_status()` to inspect current state.
 2. `ops.keyring_rotate(purpose="policy")` to rotate policy signing.
 3. `ops.keyring_upsert_api_key(...)` / `ops.keyring_disable_api_key(...)` to manage auth keys.
+4. `ops.keyring_list_presets()` to inspect built-in ACL role presets.
+5. `ops.keyring_apply_preset(preset="writer", managed_api_key="...")` to bootstrap a key quickly.
 
 ## HTTP bridge usage
 
@@ -312,14 +317,15 @@ pytest tests/test_integrity.py -q
 pytest tests/test_metrics_export.py -q
 pytest tests/test_metrics_http.py -q
 pytest tests/test_keyring.py -q
+pytest tests/test_auth_presets.py -q
 pytest tests/test_app_context.py -q
 pytest -q
 ```
 
 ## Next phase
 
-1. Add role-separated auth presets (`admin`, `writer`, `reader`) bootstrap helper.
-2. Optional SSE/streaming endpoint for real-time job queue updates.
+1. Optional SSE/streaming endpoint for real-time job queue updates.
+2. End-to-end golden-path integration test + sample client scripts.
 
 ## Publish / update GitHub
 

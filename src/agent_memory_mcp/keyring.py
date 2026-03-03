@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent_memory_mcp.auth_presets import list_auth_presets, resolve_auth_preset
+
 KEYRING_SCHEMA_VERSION = 1
 SIGNING_PURPOSES = {"policy", "audit"}
 
@@ -341,3 +343,29 @@ class FileKeyring:
             "enabled": False,
             "updated_at": saved["updated_at"],
         }
+
+    def list_auth_presets(self) -> list[dict[str, Any]]:
+        return list_auth_presets()
+
+    def apply_auth_preset(
+        self,
+        *,
+        preset: str,
+        api_key: str,
+        namespaces: list[str] | None = None,
+        enabled: bool = True,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_namespaces, resolved_scopes = resolve_auth_preset(
+            preset=preset,
+            namespaces=namespaces,
+        )
+        updated = self.upsert_api_key(
+            api_key=api_key,
+            namespaces=resolved_namespaces,
+            scopes=resolved_scopes,
+            enabled=enabled,
+            label=label,
+        )
+        updated["preset"] = preset.strip().lower()
+        return updated

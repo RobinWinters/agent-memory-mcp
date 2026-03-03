@@ -23,6 +23,48 @@ def register_ops_tools(
     require_keyring: RequireKeyringFn,
     apply_runtime_security: ApplyRuntimeSecurityFn,
 ) -> None:
+    @mcp.tool(name="ops.keyring_list_presets")
+    def ops_keyring_list_presets(
+        namespace: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """List built-in auth ACL presets for keyring bootstrap."""
+        _ = authorize(namespace, "security:read", api_key)
+        keyring = require_keyring()
+        return {
+            "enabled": True,
+            "keyring_path": str(keyring.path),
+            "presets": keyring.list_auth_presets(),
+        }
+
+    @mcp.tool(name="ops.keyring_apply_preset")
+    def ops_keyring_apply_preset(
+        preset: str,
+        managed_api_key: str,
+        namespaces: list[str] | None = None,
+        enabled: bool = True,
+        label: str | None = None,
+        namespace: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply a built-in auth ACL preset to a managed API key and reload authorizer."""
+        _ = authorize(namespace, "security:manage", api_key)
+        keyring = require_keyring()
+        updated = keyring.apply_auth_preset(
+            preset=preset,
+            api_key=managed_api_key,
+            namespaces=namespaces,
+            enabled=enabled,
+            label=label,
+        )
+        runtime = apply_runtime_security(True)
+        return {
+            "enabled": True,
+            "keyring_path": str(keyring.path),
+            "api_key_policy": updated,
+            "runtime": runtime,
+        }
+
     @mcp.tool(name="ops.health")
     def ops_health(
         namespace: str | None = None,
