@@ -2,9 +2,9 @@
 
 MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
-background workers, observability, and integrity verification.
+background workers, observability, integrity verification, and export adapters.
 
-## Current build status (v0.9.0)
+## Current build status (v0.10.0)
 
 Implemented:
 
@@ -30,7 +30,10 @@ Implemented:
 - Integrity hardening:
   - policy content digest + optional HMAC signatures
   - append-only audit hash chain
-  - audit chain + policy signature verification tools
+  - audit chain + policy signature verification
+- Metrics export adapters:
+  - Prometheus exposition text
+  - OpenTelemetry-style JSON payload
 
 ## Binaries
 
@@ -53,6 +56,8 @@ Implemented:
 - `jobs.result(job_id, namespace?, api_key?)`
 - `ops.health(namespace?, api_key?)`
 - `ops.metrics(window_minutes=60, namespace?, api_key?)`
+- `ops.metrics_prometheus(window_minutes=60, namespace?, api_key?)`
+- `ops.metrics_otel(window_minutes=60, namespace?, api_key?)`
 - `ops.audit_recent(limit=50, namespace?, api_key?)`
 - `ops.audit_verify(limit=1000, namespace?, api_key?)`
 
@@ -103,7 +108,7 @@ Job reliability:
 - `AGENT_MEMORY_JOB_RUNNING_TIMEOUT_SECONDS` (default: `300.0`)
 
 Integrity:
-- `AGENT_MEMORY_POLICY_SIGNING_SECRET` (optional HMAC secret for policy version signatures)
+- `AGENT_MEMORY_POLICY_SIGNING_SECRET` (optional HMAC secret for policy signatures)
 - `AGENT_MEMORY_AUDIT_SIGNING_SECRET` (optional HMAC secret for audit chain; defaults to policy secret)
 
 Auth:
@@ -163,6 +168,18 @@ agent-memory-mcp
 
 Qdrant handles vector lookup while SQLite remains canonical source for memory/policy/job records.
 
+## Metrics export usage
+
+Prometheus format via MCP:
+
+1. Call `ops.metrics_prometheus(window_minutes=60)`.
+2. Read returned `text` field and expose through your scrape bridge.
+
+OTel-style JSON via MCP:
+
+1. Call `ops.metrics_otel(window_minutes=60)`.
+2. Forward returned `payload` into your telemetry pipeline adapter.
+
 ## Test cadence
 
 ```bash
@@ -172,19 +189,20 @@ pytest tests/test_jobs.py -q
 pytest tests/test_worker.py -q
 pytest tests/test_observability.py -q
 pytest tests/test_integrity.py -q
+pytest tests/test_metrics_export.py -q
 pytest -q
 ```
 
 ## Next phase
 
-1. Exportable metrics endpoint/adapters (Prometheus/OpenTelemetry).
-2. Key rotation/management tooling for signing and auth secrets.
+1. Key rotation/management tooling for signing and auth secrets.
+2. Optional HTTP metrics endpoint bridge for direct Prometheus scraping.
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.9.0: policy signing and tamper-evident audit logs"
+git commit -m "Build out v0.10.0: metrics export adapters"
 git push
 ```

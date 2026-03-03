@@ -14,6 +14,7 @@ from agent_memory_mcp.integrity import (
     compute_audit_event_hash,
     verify_policy_artifact,
 )
+from agent_memory_mcp.metrics_export import build_otel_json, render_prometheus_text
 from agent_memory_mcp.models import utc_now_iso
 from agent_memory_mcp.vector_store import MemoryVectorStore
 
@@ -561,6 +562,28 @@ class MemoryPolicyService:
             "window_minutes": resolved_window_minutes,
             "jobs": metrics,
             "queue": health,
+        }
+
+    def ops_metrics_prometheus(self, window_minutes: int = 60, namespace: str | None = None) -> dict:
+        snapshot = self.ops_metrics(window_minutes=window_minutes, namespace=namespace)
+        text = render_prometheus_text(snapshot=snapshot)
+        return {
+            "namespace": snapshot["namespace"],
+            "generated_at": snapshot["generated_at"],
+            "window_minutes": snapshot["window_minutes"],
+            "format": "prometheus_text",
+            "text": text,
+        }
+
+    def ops_metrics_otel(self, window_minutes: int = 60, namespace: str | None = None) -> dict:
+        snapshot = self.ops_metrics(window_minutes=window_minutes, namespace=namespace)
+        payload = build_otel_json(snapshot=snapshot)
+        return {
+            "namespace": snapshot["namespace"],
+            "generated_at": snapshot["generated_at"],
+            "window_minutes": snapshot["window_minutes"],
+            "format": "otel_json",
+            "payload": payload,
         }
 
     def ops_audit_recent(self, limit: int = 50, namespace: str | None = None) -> dict:

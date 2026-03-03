@@ -226,6 +226,28 @@ def ops_metrics(
     return get_service().ops_metrics(window_minutes=window_minutes, namespace=resolved_ns)
 
 
+@mcp.tool(name="ops.metrics_prometheus")
+def ops_metrics_prometheus(
+    window_minutes: int = 60,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Return metrics as Prometheus text exposition format."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().ops_metrics_prometheus(window_minutes=window_minutes, namespace=resolved_ns)
+
+
+@mcp.tool(name="ops.metrics_otel")
+def ops_metrics_otel(
+    window_minutes: int = 60,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Return metrics in OpenTelemetry-style JSON payload shape."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().ops_metrics_otel(window_minutes=window_minutes, namespace=resolved_ns)
+
+
 @mcp.tool(name="ops.audit_recent")
 def ops_audit_recent(
     limit: int = 50,
