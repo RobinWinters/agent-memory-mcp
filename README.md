@@ -2,14 +2,14 @@
 
 MCP server for agent memory + policy self-improvement workflows with namespace partitioning,
 pluggable embeddings/vector backends, structured policy evaluation, API-key ACL auth, durable async jobs,
-and background workers.
+background workers, and built-in observability.
 
-## Current build status (v0.7.0)
+## Current build status (v0.8.0)
 
 Implemented:
 
 - Immutable event ingest and session distillation into memory notes.
-- Namespace-aware partitioning for memory, policy, and jobs.
+- Namespace-aware partitioning for memory, policy, jobs, and queue operations.
 - Pluggable embedding backend:
   - `hash` (default, offline deterministic)
   - `openai` (remote embeddings API)
@@ -22,11 +22,15 @@ Implemented:
 - API-key auth + ACL scopes.
 - Durable async jobs for `memory.distill` and `policy.evaluate`.
 - Background worker daemon for automatic job processing.
-- Reliability hardening for jobs:
+- Reliability hardening:
   - attempt tracking
   - exponential backoff retries
   - dead-lettering at max attempts
   - stuck-running recovery
+- Observability:
+  - queue health snapshots
+  - windowed throughput/success/failure metrics
+  - queue/run/end-to-end latency aggregates
 
 ## Binaries
 
@@ -47,6 +51,8 @@ Implemented:
 - `jobs.run_pending(limit=1, namespace?, api_key?)`
 - `jobs.status(job_id, namespace?, api_key?)`
 - `jobs.result(job_id, namespace?, api_key?)`
+- `ops.health(namespace?, api_key?)`
+- `ops.metrics(window_minutes=60, namespace?, api_key?)`
 
 Supported `job_type` values:
 - `memory.distill`
@@ -60,9 +66,9 @@ Persisted statuses:
 - `succeeded`
 - `dead`
 
-`jobs.run_pending` response also includes transient outcome counts:
-- `retried` (job failed this attempt and was requeued)
-- `dead` (job failed and exceeded max attempts)
+`jobs.run_pending` includes additional outcome counters:
+- `retried` (failed attempt and requeued)
+- `dead` (failed and exceeded max attempts)
 - `recovered_stuck` (`requeued`, `dead_lettered`)
 
 ## Environment
@@ -103,6 +109,8 @@ Auth scope families:
 - `memory:*`
 - `policy:*`
 - `jobs:*`
+
+`ops.*` tools use `jobs:read` scope.
 
 ## Quickstart
 
@@ -156,19 +164,20 @@ source .venv/bin/activate
 pytest tests/test_service.py -q
 pytest tests/test_jobs.py -q
 pytest tests/test_worker.py -q
+pytest tests/test_observability.py -q
 pytest -q
 ```
 
 ## Next phase
 
-1. Observability (queue depth, latency, failure metrics).
-2. Policy artifact signing + tamper-evident audit logs.
+1. Policy artifact signing + tamper-evident audit logs.
+2. Exportable metrics endpoint/adapters (Prometheus/OpenTelemetry).
 
 ## Publish / update GitHub
 
 ```bash
 cd <repo-root>
 git add .
-git commit -m "Build out v0.7.0: retry/backoff/dead-letter and stuck-job recovery"
+git commit -m "Build out v0.8.0: observability tools and metrics"
 git push
 ```

@@ -205,6 +205,27 @@ def jobs_result(
     return get_service().jobs_result(job_id=job_id, namespace=resolved_ns)
 
 
+@mcp.tool(name="ops.health")
+def ops_health(
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Return queue health snapshot including ready/deferred/stuck counts."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().ops_health(namespace=resolved_ns)
+
+
+@mcp.tool(name="ops.metrics")
+def ops_metrics(
+    window_minutes: int = 60,
+    namespace: str | None = None,
+    api_key: str | None = None,
+) -> dict[str, Any]:
+    """Return job throughput/latency metrics for a time window."""
+    resolved_ns = authorize(namespace=namespace, scope="jobs:read", api_key=api_key)
+    return get_service().ops_metrics(window_minutes=window_minutes, namespace=resolved_ns)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

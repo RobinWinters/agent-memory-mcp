@@ -417,6 +417,55 @@ class MemoryPolicyService:
             "finished_at": job["finished_at"],
         }
 
+    def ops_health(self, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        cutoff_dt = now_dt - timedelta(
+            seconds=self._coerce_positive_float(self.job_running_timeout_seconds, default=300.0)
+        )
+        health = self.db.get_job_queue_health(
+            namespace=ns,
+            now=now_iso,
+            running_cutoff_started_at=cutoff_dt.isoformat(),
+        )
+        return {
+            "namespace": ns,
+            "generated_at": now_iso,
+            "job_running_timeout_seconds": self.job_running_timeout_seconds,
+            "queue": health,
+        }
+
+    def ops_metrics(self, window_minutes: int = 60, namespace: str | None = None) -> dict:
+        ns = self._ns(namespace)
+        resolved_window_minutes = self._coerce_positive_int(window_minutes, default=60)
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        since_dt = now_dt - timedelta(minutes=resolved_window_minutes)
+
+        metrics = self.db.get_job_metrics_window(
+            namespace=ns,
+            since=since_dt.isoformat(),
+            now=now_iso,
+        )
+        health = self.db.get_job_queue_health(
+            namespace=ns,
+            now=now_iso,
+            running_cutoff_started_at=(
+                now_dt
+                - timedelta(
+                    seconds=self._coerce_positive_float(self.job_running_timeout_seconds, default=300.0)
+                )
+            ).isoformat(),
+        )
+        return {
+            "namespace": ns,
+            "generated_at": now_iso,
+            "window_minutes": resolved_window_minutes,
+            "jobs": metrics,
+            "queue": health,
+        }
+
     def jobs_run_pending(self, limit: int = 1, namespace: str | None = None) -> dict:
         ns = self._ns(namespace)
         resolved_limit = self._coerce_positive_int(limit, default=1)
