@@ -22,7 +22,7 @@ This system is for agents/models that want durable memory plus controlled self-i
 5. Evaluate with `policy.evaluate`.
 6. Promote passing changes with `policy.promote` (or rollback with `policy.rollback`).
 
-## Current build status (v0.12.0)
+## Current build status (v0.12.1)
 
 Implemented:
 
