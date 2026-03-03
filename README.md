@@ -219,4 +219,5 @@ Run a targeted suite:
 ```bash
 source .venv/bin/activate
 pytest tests/test_metrics_http.py -q
+pytest tests/test_golden_path_integration.py -q
 ```
