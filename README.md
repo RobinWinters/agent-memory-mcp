@@ -145,6 +145,28 @@ If enabling API-key auth:
 If enabling keyring-backed signing/auth management:
 - `AGENT_MEMORY_KEYRING_FILE=/path/to/keyring.json`
 
+## Example scripts
+
+Run an end-to-end local workflow:
+
+```bash
+source .venv/bin/activate
+python examples/golden_path.py --namespace default --session-id demo-session
+```
+
+Watch live queue snapshots over SSE:
+
+```bash
+./examples/sse_watch.sh default 1 true
+```
+
+If metrics token auth is enabled:
+
+```bash
+export AGENT_MEMORY_METRICS_TOKEN=your-token
+./examples/sse_watch.sh default 1 true
+```
+
 ## Full environment reference
 
 Core:
