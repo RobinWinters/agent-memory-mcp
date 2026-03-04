@@ -222,6 +222,41 @@ agent-memory-handoff import \
   --pretty
 ```
 
+## Adapter Kit v1 (Cursor)
+
+Use `agent-memory-adapter` to automate session start/end continuity in Cursor-style workflows.
+
+Session start (import + context refresh):
+
+```bash
+agent-memory-adapter cursor-start \
+  --db ./data/agent_memory.db \
+  --namespace default \
+  --handoff-file ./.agent-memory/handoff.json \
+  --prompt-file ./.agent-memory/context.md \
+  --verify \
+  --import-policy \
+  --no-import-events \
+  --pretty
+```
+
+Session end (signed export):
+
+```bash
+agent-memory-adapter cursor-end \
+  --db ./data/agent_memory.db \
+  --namespace default \
+  --handoff-file ./.agent-memory/handoff.json \
+  --prompt-file ./.agent-memory/context.md \
+  --include-events \
+  --sign \
+  --pretty
+```
+
+Helper shell scripts are included:
+- `adapters/cursor/session_start.sh`
+- `adapters/cursor/session_end.sh`
+
 ## Full environment reference
 
 Core:
@@ -301,4 +336,5 @@ pytest tests/test_golden_path_integration.py -q
 pytest tests/test_handoff.py -q
 pytest tests/test_handoff_schema.py -q
 pytest tests/test_handoff_cli.py -q
+pytest tests/test_adapter_cli.py -q
 ```
