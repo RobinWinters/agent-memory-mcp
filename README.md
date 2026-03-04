@@ -222,6 +222,27 @@ agent-memory-handoff import \
   --pretty
 ```
 
+Incremental sync (cursor-based):
+
+```bash
+# first export: writes cursor
+agent-memory-handoff export \
+  --db ./data/agent_memory.db \
+  --namespace default \
+  --output ./handoff-full.json \
+  --cursor-out ./.agent-memory/cursor.json \
+  --pretty
+
+# next export: only deltas since cursor
+agent-memory-handoff export \
+  --db ./data/agent_memory.db \
+  --namespace default \
+  --cursor-in ./.agent-memory/cursor.json \
+  --cursor-out ./.agent-memory/cursor.json \
+  --output ./handoff-delta.json \
+  --pretty
+```
+
 ## Adapter Kit v1 (Cursor)
 
 Use `agent-memory-adapter` to automate session start/end continuity in Cursor-style workflows.
@@ -248,6 +269,7 @@ agent-memory-adapter cursor-end \
   --namespace default \
   --handoff-file ./.agent-memory/handoff.json \
   --prompt-file ./.agent-memory/context.md \
+  --cursor-file ./.agent-memory/cursor.json \
   --include-events \
   --sign \
   --pretty
@@ -317,6 +339,7 @@ Notes:
 - `ops.*` requires `jobs:read`
 - `ops.keyring_*` requires `security:read` or `security:manage`
 - signed handoff export/import (`sign=true` / `verify=true`) requires `security:read`
+- incremental cursor sync is scoped to a DB lineage (cursor IDs come from that DB)
 
 ## Testing
 

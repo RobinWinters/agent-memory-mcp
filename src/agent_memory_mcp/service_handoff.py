@@ -124,6 +124,9 @@ class ServiceHandoffMixin:
         include_events: bool = False,
         max_events_per_session: int = 20,
         sign: bool = False,
+        since_memory_id: int | None = None,
+        since_event_id: int | None = None,
+        since_policy_created_at: str | None = None,
         namespace: str | None = None,
     ) -> dict[str, Any]:
         ns = self._ns(namespace)
@@ -131,6 +134,17 @@ class ServiceHandoffMixin:
         resolved_max_events = self._coerce_positive_int(max_events_per_session, default=20)
         now = utc_now_iso()
         clean_query = (query or "").strip()
+        resolved_since_memory_id = max(0, int(since_memory_id or 0))
+        resolved_since_event_id = max(0, int(since_event_id or 0))
+        clean_since_policy_created_at = (since_policy_created_at or "").strip() or None
+        sync_mode = (
+            "incremental"
+            if (resolved_since_memory_id > 0 or resolved_since_event_id > 0 or clean_since_policy_created_at)
+            else "full"
+        )
+
+        if clean_query and sync_mode == "incremental":
+            raise ValueError("query cannot be combined with incremental cursor filters")
 
         memories: list[dict[str, Any]] = []
         if clean_query:
@@ -148,8 +162,15 @@ class ServiceHandoffMixin:
                 )
         else:
             all_memories = self.db.list_memories(namespace=ns)
-            all_memories.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
-            for item in all_memories[:resolved_k]:
+            if sync_mode == "incremental":
+                filtered = [item for item in all_memories if int(item.get("id", 0)) > resolved_since_memory_id]
+                filtered.sort(key=lambda item: int(item.get("id", 0)))
+                selected = filtered[:resolved_k]
+            else:
+                all_memories.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+                selected = all_memories[:resolved_k]
+
+            for item in selected:
                 memories.append(
                     {
                         "memory_id": int(item["id"]),
@@ -164,45 +185,85 @@ class ServiceHandoffMixin:
         if include_policy:
             active = self.db.get_active_policy_version(namespace=ns)
             if active is not None:
-                policy_payload = {
-                    "version_id": str(active.get("version_id", "")),
-                    "content_md": str(active.get("content_md", "")),
-                    "created_at": str(active.get("created_at", "")),
-                    "content_sha256": str(active.get("content_sha256", "")),
-                    "signing_method": str(active.get("signing_method", "")),
-                    "source_proposal_id": active.get("source_proposal_id"),
-                }
+                active_created_at = str(active.get("created_at", ""))
+                if sync_mode != "incremental" or not clean_since_policy_created_at or (
+                    active_created_at > clean_since_policy_created_at
+                ):
+                    policy_payload = {
+                        "version_id": str(active.get("version_id", "")),
+                        "content_md": str(active.get("content_md", "")),
+                        "created_at": active_created_at,
+                        "content_sha256": str(active.get("content_sha256", "")),
+                        "signing_method": str(active.get("signing_method", "")),
+                        "source_proposal_id": active.get("source_proposal_id"),
+                    }
 
         sessions: list[dict[str, Any]] = []
         event_count = 0
-        if include_events and memories:
-            seen_session_ids: set[str] = set()
-            for memory in memories:
-                session_id = str(memory.get("session_id", "")).strip()
-                if not session_id or session_id in seen_session_ids:
-                    continue
-                seen_session_ids.add(session_id)
-                raw_events = self.db.list_events(namespace=ns, session_id=session_id)
-                trimmed = raw_events[-resolved_max_events:] if resolved_max_events > 0 else raw_events
-                events: list[dict[str, Any]] = []
-                for event in trimmed:
-                    events.append(
+        if include_events:
+            if sync_mode == "incremental":
+                raw_events = self.db.list_events_for_namespace(namespace=ns, after_id=resolved_since_event_id)
+                grouped: dict[str, list[dict[str, Any]]] = {}
+                for event in raw_events:
+                    session_id = str(event.get("session_id", "")).strip() or "unknown"
+                    grouped.setdefault(session_id, []).append(event)
+                for session_id, items in grouped.items():
+                    trimmed = items[-resolved_max_events:] if resolved_max_events > 0 else items
+                    events: list[dict[str, Any]] = []
+                    for event in trimmed:
+                        events.append(
+                            {
+                                "id": int(event["id"]),
+                                "role": str(event["role"]),
+                                "content": str(event["content"]),
+                                "created_at": str(event["created_at"]),
+                                "metadata": dict(event.get("metadata", {})),
+                            }
+                        )
+                    event_count += len(events)
+                    sessions.append(
                         {
-                            "id": int(event["id"]),
-                            "role": str(event["role"]),
-                            "content": str(event["content"]),
-                            "created_at": str(event["created_at"]),
-                            "metadata": dict(event.get("metadata", {})),
+                            "session_id": session_id,
+                            "event_count": len(events),
+                            "events": events,
                         }
                     )
-                event_count += len(events)
-                sessions.append(
-                    {
-                        "session_id": session_id,
-                        "event_count": len(events),
-                        "events": events,
-                    }
-                )
+            elif memories:
+                seen_session_ids: set[str] = set()
+                for memory in memories:
+                    session_id = str(memory.get("session_id", "")).strip()
+                    if not session_id or session_id in seen_session_ids:
+                        continue
+                    seen_session_ids.add(session_id)
+                    raw_events = self.db.list_events(namespace=ns, session_id=session_id)
+                    trimmed = raw_events[-resolved_max_events:] if resolved_max_events > 0 else raw_events
+                    events: list[dict[str, Any]] = []
+                    for event in trimmed:
+                        events.append(
+                            {
+                                "id": int(event["id"]),
+                                "role": str(event["role"]),
+                                "content": str(event["content"]),
+                                "created_at": str(event["created_at"]),
+                                "metadata": dict(event.get("metadata", {})),
+                            }
+                        )
+                    event_count += len(events)
+                    sessions.append(
+                        {
+                            "session_id": session_id,
+                            "event_count": len(events),
+                            "events": events,
+                        }
+                    )
+
+        active_for_cursor = self.db.get_active_policy_version(namespace=ns) or {}
+        cursor = {
+            "memory_id_max": int(self.db.get_latest_memory_id(namespace=ns)),
+            "event_id_max": int(self.db.get_latest_event_id(namespace=ns)),
+            "policy_created_at": str(active_for_cursor.get("created_at", "")) or None,
+            "policy_version_id": str(active_for_cursor.get("version_id", "")) or None,
+        }
 
         prompt_md = self._build_handoff_prompt(
             namespace=ns,
@@ -215,6 +276,17 @@ class ServiceHandoffMixin:
             "schema": HANDOFF_SCHEMA_ID,
             "generated_at": now,
             "namespace": ns,
+            "sync_mode": sync_mode,
+            "since": (
+                {
+                    "memory_id": resolved_since_memory_id,
+                    "event_id": resolved_since_event_id,
+                    "policy_created_at": clean_since_policy_created_at,
+                }
+                if sync_mode == "incremental"
+                else None
+            ),
+            "cursor": cursor,
             "query": clean_query or None,
             "k": resolved_k,
             "policy": policy_payload,
@@ -254,11 +326,25 @@ class ServiceHandoffMixin:
         memories_raw = handoff.get("memories", [])
         sessions_raw = handoff.get("sessions", [])
         policy_raw = handoff.get("policy")
+        cursor_raw = handoff.get("cursor")
+        sync_mode = str(handoff.get("sync_mode", "")).strip() or None
 
         if not isinstance(memories_raw, list):
             memories_raw = []
         if not isinstance(sessions_raw, list):
             sessions_raw = []
+
+        existing_source_memory_keys: set[tuple[str, str]] = set()
+        if source_namespace:
+            existing_memories = self.db.list_memories(namespace=ns)
+            for item in existing_memories:
+                metadata = item.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    continue
+                src_ns = str(metadata.get("source_namespace", "")).strip()
+                src_memory_id = metadata.get("source_memory_id")
+                if src_ns and src_memory_id is not None:
+                    existing_source_memory_keys.add((src_ns, str(src_memory_id)))
 
         imported_memory_ids: list[int] = []
         skipped_memories = 0
@@ -283,6 +369,11 @@ class ServiceHandoffMixin:
             source_memory_id = raw.get("memory_id")
             if source_memory_id is not None:
                 metadata.setdefault("source_memory_id", source_memory_id)
+            if source_namespace and source_memory_id is not None:
+                dedupe_key = (source_namespace, str(source_memory_id))
+                if dedupe_key in existing_source_memory_keys:
+                    skipped_memories += 1
+                    continue
 
             embedding = self.embedder.embed(content)
             memory_id = self.db.insert_memory(
@@ -301,9 +392,23 @@ class ServiceHandoffMixin:
                 metadata=metadata,
             )
             imported_memory_ids.append(memory_id)
+            if source_namespace and source_memory_id is not None:
+                existing_source_memory_keys.add((source_namespace, str(source_memory_id)))
 
         imported_events = 0
         skipped_events = 0
+        existing_source_event_keys: set[tuple[str, str]] = set()
+        if source_namespace and import_events:
+            existing_events = self.db.list_events_for_namespace(namespace=ns, after_id=0)
+            for item in existing_events:
+                metadata = item.get("metadata", {})
+                if not isinstance(metadata, dict):
+                    continue
+                src_ns = str(metadata.get("source_namespace", "")).strip()
+                src_event_id = metadata.get("source_event_id")
+                if src_ns and src_event_id is not None:
+                    existing_source_event_keys.add((src_ns, str(src_event_id)))
+
         if import_events:
             for session_index, raw_session in enumerate(sessions_raw, start=1):
                 if not isinstance(raw_session, dict):
@@ -333,6 +438,16 @@ class ServiceHandoffMixin:
                     metadata_raw = raw_event.get("metadata", {})
                     metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
                     metadata.setdefault("imported_from_handoff", True)
+                    if source_namespace:
+                        metadata.setdefault("source_namespace", source_namespace)
+                    source_event_id = raw_event.get("id")
+                    if source_event_id is not None:
+                        metadata.setdefault("source_event_id", source_event_id)
+                    if source_namespace and source_event_id is not None:
+                        dedupe_key = (source_namespace, str(source_event_id))
+                        if dedupe_key in existing_source_event_keys:
+                            skipped_events += 1
+                            continue
                     self.db.append_event(
                         namespace=ns,
                         session_id=session_id,
@@ -342,6 +457,8 @@ class ServiceHandoffMixin:
                         metadata=metadata,
                     )
                     imported_events += 1
+                    if source_namespace and source_event_id is not None:
+                        existing_source_event_keys.add((source_namespace, str(source_event_id)))
 
         imported_policy_version_id: str | None = None
         if import_policy and isinstance(policy_raw, dict):
@@ -370,4 +487,6 @@ class ServiceHandoffMixin:
             "imported_events": imported_events,
             "skipped_events": skipped_events,
             "imported_policy_version_id": imported_policy_version_id,
+            "sync_mode": sync_mode,
+            "cursor": dict(cursor_raw) if isinstance(cursor_raw, dict) else None,
         }

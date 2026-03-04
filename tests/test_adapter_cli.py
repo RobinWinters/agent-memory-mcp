@@ -57,6 +57,7 @@ def test_adapter_cli_cursor_roundtrip(tmp_path: Path, monkeypatch, capsys) -> No
     target_db = tmp_path / "target.db"
     handoff_file = tmp_path / "handoff.json"
     prompt_file = tmp_path / "context.md"
+    cursor_file = tmp_path / "cursor.json"
 
     monkeypatch.setenv("AGENT_MEMORY_EMBEDDING_BACKEND", "hash")
     monkeypatch.setenv("AGENT_MEMORY_VECTOR_BACKEND", "sqlite")
@@ -75,6 +76,8 @@ def test_adapter_cli_cursor_roundtrip(tmp_path: Path, monkeypatch, capsys) -> No
             str(handoff_file),
             "--prompt-file",
             str(prompt_file),
+            "--cursor-file",
+            str(cursor_file),
             "--include-events",
             "--sign",
             "--pretty",
@@ -83,6 +86,7 @@ def test_adapter_cli_cursor_roundtrip(tmp_path: Path, monkeypatch, capsys) -> No
     assert end_code == 0
     assert handoff_file.exists()
     assert prompt_file.exists()
+    assert cursor_file.exists()
     exported = json.loads(handoff_file.read_text(encoding="utf-8"))
     assert isinstance(exported.get("signature"), dict)
     end_output = capsys.readouterr().out
@@ -167,3 +171,72 @@ def test_adapter_cli_cursor_start_missing_handoff(tmp_path: Path, monkeypatch, c
     assert strict_code == 1
     err = capsys.readouterr().err
     assert "handoff file not found" in err
+
+
+def test_adapter_cli_cursor_end_incremental_with_cursor_file(tmp_path: Path, monkeypatch, capsys) -> None:
+    namespace = "adapter-incremental"
+    db_path = tmp_path / "source.db"
+    handoff_file = tmp_path / "handoff.json"
+    prompt_file = tmp_path / "context.md"
+    cursor_file = tmp_path / "cursor.json"
+
+    monkeypatch.setenv("AGENT_MEMORY_EMBEDDING_BACKEND", "hash")
+    monkeypatch.setenv("AGENT_MEMORY_VECTOR_BACKEND", "sqlite")
+    monkeypatch.setenv("AGENT_MEMORY_POLICY_SIGNING_SECRET", "adapter-secret")
+
+    seed_source(db_path, namespace=namespace)
+
+    full_code = adapter_main(
+        [
+            "cursor-end",
+            "--db",
+            str(db_path),
+            "--namespace",
+            namespace,
+            "--handoff-file",
+            str(handoff_file),
+            "--prompt-file",
+            str(prompt_file),
+            "--cursor-file",
+            str(cursor_file),
+            "--include-events",
+            "--pretty",
+        ]
+    )
+    assert full_code == 0
+    first_payload = json.loads(handoff_file.read_text(encoding="utf-8"))
+    assert first_payload["sync_mode"] == "full"
+    _ = capsys.readouterr()
+
+    source = make_service(db_path)
+    try:
+        source.append_event("s2", "user", "new adapter delta", namespace=namespace)
+        source.append_event("s2", "assistant", "track with cursor", namespace=namespace)
+        source.distill_session("s2", namespace=namespace)
+    finally:
+        source.db.close()
+
+    delta_code = adapter_main(
+        [
+            "cursor-end",
+            "--db",
+            str(db_path),
+            "--namespace",
+            namespace,
+            "--handoff-file",
+            str(handoff_file),
+            "--prompt-file",
+            str(prompt_file),
+            "--cursor-file",
+            str(cursor_file),
+            "--include-events",
+            "--incremental",
+            "--pretty",
+        ]
+    )
+    assert delta_code == 0
+    delta_payload = json.loads(handoff_file.read_text(encoding="utf-8"))
+    assert delta_payload["sync_mode"] == "incremental"
+    assert delta_payload["memories"]
+    out = capsys.readouterr().out
+    assert '"sync_mode": "incremental"' in out

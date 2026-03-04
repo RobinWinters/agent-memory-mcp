@@ -180,3 +180,65 @@ def test_handoff_cli_verify_rejects_tampered_payload(tmp_path: Path, monkeypatch
         ]
     )
     assert import_code == 1
+
+
+def test_handoff_cli_export_with_cursor_in_out(tmp_path: Path, monkeypatch) -> None:
+    source_ns = "source-cli"
+    source_db = tmp_path / "source.db"
+    handoff_full = tmp_path / "handoff-full.json"
+    handoff_delta = tmp_path / "handoff-delta.json"
+    cursor_file = tmp_path / "cursor.json"
+
+    monkeypatch.setenv("AGENT_MEMORY_EMBEDDING_BACKEND", "hash")
+    monkeypatch.setenv("AGENT_MEMORY_VECTOR_BACKEND", "sqlite")
+    monkeypatch.setenv("AGENT_MEMORY_POLICY_SIGNING_SECRET", "handoff-cli-secret")
+
+    seed_source(source_db, namespace=source_ns)
+
+    full_code = handoff_main(
+        [
+            "export",
+            "--db",
+            str(source_db),
+            "--namespace",
+            source_ns,
+            "--include-events",
+            "--output",
+            str(handoff_full),
+            "--cursor-out",
+            str(cursor_file),
+            "--pretty",
+        ]
+    )
+    assert full_code == 0
+    assert cursor_file.exists()
+
+    source = make_service(source_db)
+    try:
+        source.append_event("s2", "user", "new cursor delta", namespace=source_ns)
+        source.append_event("s2", "assistant", "second line", namespace=source_ns)
+        source.distill_session("s2", namespace=source_ns)
+    finally:
+        source.db.close()
+
+    delta_code = handoff_main(
+        [
+            "export",
+            "--db",
+            str(source_db),
+            "--namespace",
+            source_ns,
+            "--include-events",
+            "--cursor-in",
+            str(cursor_file),
+            "--cursor-out",
+            str(cursor_file),
+            "--output",
+            str(handoff_delta),
+            "--pretty",
+        ]
+    )
+    assert delta_code == 0
+    delta = json.loads(handoff_delta.read_text(encoding="utf-8"))
+    assert delta["sync_mode"] == "incremental"
+    assert delta["memories"]

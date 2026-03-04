@@ -71,6 +71,9 @@ def register_memory_tools(
         include_events: bool = False,
         max_events_per_session: int = 20,
         sign: bool = False,
+        since_memory_id: int | None = None,
+        since_event_id: int | None = None,
+        since_policy_created_at: str | None = None,
         namespace: str | None = None,
         api_key: str | None = None,
     ) -> dict[str, Any]:
@@ -87,6 +90,9 @@ def register_memory_tools(
             include_events=include_events,
             max_events_per_session=max_events_per_session,
             sign=sign,
+            since_memory_id=since_memory_id,
+            since_event_id=since_event_id,
+            since_policy_created_at=since_policy_created_at,
             namespace=resolved_ns,
         )
 

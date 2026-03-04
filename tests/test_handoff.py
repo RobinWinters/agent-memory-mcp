@@ -175,3 +175,57 @@ def test_handoff_verify_rejects_missing_signature(tmp_path: Path) -> None:
     unsigned = source.memory_handoff_export(namespace="source-a")
     with pytest.raises(ValueError, match="signature block is missing"):
         target.memory_handoff_import(handoff=unsigned, verify=True, namespace="target-b")
+
+
+def test_handoff_incremental_cursor_and_dedupe(tmp_path: Path) -> None:
+    source_ns = "source-a"
+    target_ns = "target-b"
+    source = make_service(tmp_path / "source.db", policy_signing_secret="secret")
+    target = make_service(tmp_path / "target.db", policy_signing_secret="secret")
+
+    seed_memory_and_policy(source, namespace=source_ns)
+    full = source.memory_handoff_export(
+        include_policy=True,
+        include_events=True,
+        sign=True,
+        namespace=source_ns,
+    )
+    assert full["sync_mode"] == "full"
+    assert isinstance(full["cursor"], dict)
+
+    first = target.memory_handoff_import(
+        handoff=full,
+        import_policy=True,
+        import_events=True,
+        verify=True,
+        namespace=target_ns,
+    )
+    assert first["imported_memories"] >= 1
+
+    second = target.memory_handoff_import(
+        handoff=full,
+        import_policy=True,
+        import_events=True,
+        verify=True,
+        namespace=target_ns,
+    )
+    assert second["imported_memories"] == 0
+    assert second["imported_events"] == 0
+
+    source.append_event("s2", "user", "New delta event", namespace=source_ns)
+    source.append_event("s2", "assistant", "Distill this", namespace=source_ns)
+    source.distill_session("s2", namespace=source_ns)
+
+    cursor = dict(full["cursor"])
+    incremental = source.memory_handoff_export(
+        include_policy=True,
+        include_events=True,
+        since_memory_id=int(cursor["memory_id_max"]),
+        since_event_id=int(cursor["event_id_max"]),
+        since_policy_created_at=cursor["policy_created_at"],
+        namespace=source_ns,
+    )
+    assert incremental["sync_mode"] == "incremental"
+    assert incremental["since"]["memory_id"] == int(cursor["memory_id_max"])
+    assert incremental["memories"]
+    assert incremental["policy"] is None

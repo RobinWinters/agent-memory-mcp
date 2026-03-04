@@ -97,6 +97,20 @@ def _cmd_cursor_start(args: argparse.Namespace) -> int:
 def _cmd_cursor_end(args: argparse.Namespace) -> int:
     handoff_path = Path(args.handoff_file)
     prompt_path = Path(args.prompt_file)
+    cursor_path = Path(args.cursor_file)
+
+    since_memory_id: int | None = None
+    since_event_id: int | None = None
+    since_policy_created_at: str | None = None
+    if args.incremental and cursor_path.exists():
+        raw = json.loads(cursor_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            if raw.get("memory_id_max") is not None:
+                since_memory_id = int(raw["memory_id_max"])
+            if raw.get("event_id_max") is not None:
+                since_event_id = int(raw["event_id_max"])
+            if raw.get("policy_created_at") is not None:
+                since_policy_created_at = str(raw["policy_created_at"]).strip() or None
 
     _, service = _build_service(db_path=args.db, namespace=args.namespace)
     try:
@@ -107,6 +121,9 @@ def _cmd_cursor_end(args: argparse.Namespace) -> int:
             include_events=args.include_events,
             max_events_per_session=args.max_events_per_session,
             sign=args.sign,
+            since_memory_id=since_memory_id,
+            since_event_id=since_event_id,
+            since_policy_created_at=since_policy_created_at,
             namespace=args.namespace,
         )
     finally:
@@ -122,6 +139,11 @@ def _cmd_cursor_end(args: argparse.Namespace) -> int:
     else:
         prompt_text = ""
 
+    cursor_payload = payload.get("cursor")
+    if isinstance(cursor_payload, dict):
+        cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        cursor_path.write_text(_json_dump(cursor_payload, pretty=True) + "\n", encoding="utf-8")
+
     summary = {
         "adapter": "cursor",
         "action": "end",
@@ -131,6 +153,9 @@ def _cmd_cursor_end(args: argparse.Namespace) -> int:
         "prompt_file": str(prompt_path) if args.write_prompt else None,
         "prompt_chars": len(prompt_text),
         "stats": payload.get("stats", {}),
+        "sync_mode": payload.get("sync_mode"),
+        "since": payload.get("since"),
+        "cursor_file": str(cursor_path),
         "generated_at": payload.get("generated_at"),
     }
     sys.stdout.write(_json_dump(summary, pretty=args.pretty) + "\n")
@@ -186,6 +211,17 @@ def build_parser() -> argparse.ArgumentParser:
     end_parser.add_argument("--prompt-file", default=".agent-memory/context.md", help="Prompt markdown output path.")
     end_parser.add_argument("--query", default=None, help="Optional semantic selection query.")
     end_parser.add_argument("--k", type=int, default=20, help="Number of memories to export.")
+    end_parser.add_argument(
+        "--cursor-file",
+        default=".agent-memory/cursor.json",
+        help="Cursor file for incremental sync tracking.",
+    )
+    end_parser.add_argument(
+        "--incremental",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use cursor file to export only deltas.",
+    )
     end_parser.add_argument("--include-events", action="store_true", help="Include raw events in exported handoff.")
     end_parser.add_argument("--max-events-per-session", type=int, default=20, help="Event export cap.")
     end_parser.add_argument(

@@ -71,6 +71,47 @@ class DatabaseMemoryMixin:
             for row in rows
         ]
 
+    def list_events_for_namespace(
+        self,
+        namespace: str,
+        after_id: int = 0,
+    ) -> list[dict[str, Any]]:
+        resolved_after_id = max(0, int(after_id))
+        rows = self.conn.execute(
+            """
+            SELECT id, namespace, session_id, role, content, created_at, metadata_json
+            FROM events
+            WHERE namespace=? AND id > ?
+            ORDER BY id ASC
+            """,
+            (namespace, resolved_after_id),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "namespace": row["namespace"],
+                "session_id": row["session_id"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def get_latest_event_id(self, namespace: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(MAX(id), 0) AS max_id
+            FROM events
+            WHERE namespace=?
+            """,
+            (namespace,),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["max_id"] or 0)
+
     def insert_memory(
         self,
         namespace: str,
@@ -112,6 +153,19 @@ class DatabaseMemoryMixin:
             }
             for row in rows
         ]
+
+    def get_latest_memory_id(self, namespace: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(MAX(id), 0) AS max_id
+            FROM memories
+            WHERE namespace=?
+            """,
+            (namespace,),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["max_id"] or 0)
 
     def get_memories_by_ids(self, namespace: str, memory_ids: list[int]) -> list[dict[str, Any]]:
         if not memory_ids:
