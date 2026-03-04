@@ -198,6 +198,29 @@ def test_golden_path_integration(tmp_path: Path) -> None:
     assert distill_result["status"] == "succeeded"
     assert int(distill_result["result"]["memory_id"]) > 0
 
+    recorded_outcome = mcp_call_json(
+        mcp,
+        "memory.record_outcome",
+        {
+            "session_id": session_id,
+            "memory_id": int(distill_result["result"]["memory_id"]),
+            "outcome_type": "quality_gate_pass",
+            "summary": "Release gate passed with no regressions.",
+            "score": 0.93,
+            "namespace": namespace,
+        },
+    )
+    assert int(recorded_outcome["outcome_id"]) > 0
+    assert recorded_outcome["outcome_type"] == "quality_gate_pass"
+
+    outcomes = mcp_call_json(
+        mcp,
+        "memory.outcomes",
+        {"session_id": session_id, "limit": 5, "namespace": namespace},
+    )
+    assert len(outcomes) == 1
+    assert outcomes[0]["outcome_type"] == "quality_gate_pass"
+
     search_results = mcp_call_json(
         mcp,
         "memory.search",

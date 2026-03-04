@@ -74,10 +74,11 @@ agent-memory-metrics-http
 
 1. Call `memory.append` to record raw events.
 2. Call `memory.distill` to create memory notes.
-3. Call `memory.search` to retrieve relevant context.
-4. Call `policy.propose`.
-5. Call `policy.evaluate`.
-6. Call `policy.promote` (or `policy.rollback`).
+3. Call `memory.record_outcome` to log whether actions based on memory succeeded or failed.
+4. Call `memory.search` to retrieve relevant context.
+5. Call `policy.propose`.
+6. Call `policy.evaluate`.
+7. Call `policy.promote` (or `policy.rollback`).
 
 ## Core MCP tools
 
@@ -85,6 +86,8 @@ Memory:
 - `memory.append`
 - `memory.distill`
 - `memory.search`
+- `memory.record_outcome`
+- `memory.outcomes`
 - `memory.handoff_export`
 - `memory.handoff_import`
 

@@ -167,6 +167,108 @@ class DatabaseMemoryMixin:
             return 0
         return int(row["max_id"] or 0)
 
+    def insert_memory_outcome(
+        self,
+        namespace: str,
+        session_id: str,
+        outcome_type: str,
+        summary: str,
+        created_at: str,
+        metadata: dict[str, Any],
+        memory_id: int | None = None,
+        score: float | None = None,
+    ) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT INTO memory_outcomes(
+                namespace,
+                session_id,
+                memory_id,
+                outcome_type,
+                summary,
+                score,
+                created_at,
+                metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                namespace,
+                session_id,
+                memory_id,
+                outcome_type,
+                summary,
+                score,
+                created_at,
+                json.dumps(metadata),
+            ),
+        )
+        self.conn.commit()
+        return int(cursor.lastrowid)
+
+    def list_memory_outcomes(
+        self,
+        namespace: str,
+        session_id: str | None = None,
+        memory_id: int | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        where = ["namespace=?"]
+        params: list[Any] = [namespace]
+        if session_id:
+            where.append("session_id=?")
+            params.append(session_id)
+        if memory_id is not None:
+            where.append("memory_id=?")
+            params.append(int(memory_id))
+        params.append(max(1, int(limit)))
+        rows = self.conn.execute(
+            f"""
+            SELECT
+                id,
+                namespace,
+                session_id,
+                memory_id,
+                outcome_type,
+                summary,
+                score,
+                created_at,
+                metadata_json
+            FROM memory_outcomes
+            WHERE {' AND '.join(where)}
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "namespace": row["namespace"],
+                "session_id": row["session_id"],
+                "memory_id": row["memory_id"],
+                "outcome_type": row["outcome_type"],
+                "summary": row["summary"],
+                "score": row["score"],
+                "created_at": row["created_at"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def get_latest_outcome_id(self, namespace: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE(MAX(id), 0) AS max_id
+            FROM memory_outcomes
+            WHERE namespace=?
+            """,
+            (namespace,),
+        ).fetchone()
+        if row is None:
+            return 0
+        return int(row["max_id"] or 0)
+
     def get_memories_by_ids(self, namespace: str, memory_ids: list[int]) -> list[dict[str, Any]]:
         if not memory_ids:
             return []

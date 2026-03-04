@@ -124,3 +124,100 @@ class ServiceMemoryMixin:
                 }
             )
         return results
+
+    def memory_record_outcome(
+        self,
+        session_id: str,
+        outcome_type: str,
+        summary: str,
+        memory_id: int | None = None,
+        score: float | None = None,
+        metadata: dict | None = None,
+        namespace: str | None = None,
+    ) -> dict:
+        ns = self._ns(namespace)
+        now = utc_now_iso()
+
+        clean_session_id = session_id.strip()
+        if not clean_session_id:
+            raise ValueError("session_id is required")
+
+        clean_outcome_type = outcome_type.strip()
+        if not clean_outcome_type:
+            raise ValueError("outcome_type is required")
+
+        clean_summary = summary.strip()
+        if not clean_summary:
+            raise ValueError("summary is required")
+
+        resolved_memory_id: int | None = None
+        if memory_id is not None:
+            resolved_memory_id = int(memory_id)
+            if resolved_memory_id <= 0:
+                raise ValueError("memory_id must be a positive integer")
+            linked = self.db.get_memories_by_ids(namespace=ns, memory_ids=[resolved_memory_id])
+            if not linked:
+                raise ValueError(f"memory_id {resolved_memory_id} was not found in namespace '{ns}'")
+            if str(linked[0].get("session_id", "")) != clean_session_id:
+                raise ValueError(
+                    f"memory_id {resolved_memory_id} belongs to session '{linked[0]['session_id']}', "
+                    f"not '{clean_session_id}'"
+                )
+
+        resolved_score: float | None = None
+        if score is not None:
+            try:
+                resolved_score = float(score)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("score must be a number") from exc
+
+        clean_metadata = metadata or {}
+        self.db.upsert_session(
+            namespace=ns,
+            session_id=clean_session_id,
+            started_at=now,
+            metadata={"source": "mcp"},
+        )
+        outcome_id = self.db.insert_memory_outcome(
+            namespace=ns,
+            session_id=clean_session_id,
+            memory_id=resolved_memory_id,
+            outcome_type=clean_outcome_type,
+            summary=clean_summary,
+            score=resolved_score,
+            created_at=now,
+            metadata=clean_metadata,
+        )
+        return {
+            "outcome_id": outcome_id,
+            "namespace": ns,
+            "session_id": clean_session_id,
+            "memory_id": resolved_memory_id,
+            "outcome_type": clean_outcome_type,
+            "summary": clean_summary,
+            "score": resolved_score,
+            "metadata": clean_metadata,
+            "created_at": now,
+        }
+
+    def memory_list_outcomes(
+        self,
+        session_id: str | None = None,
+        memory_id: int | None = None,
+        limit: int = 20,
+        namespace: str | None = None,
+    ) -> list[dict]:
+        ns = self._ns(namespace)
+        clean_session_id = (session_id or "").strip() or None
+        resolved_memory_id: int | None = None
+        if memory_id is not None:
+            resolved_memory_id = int(memory_id)
+            if resolved_memory_id <= 0:
+                raise ValueError("memory_id must be a positive integer")
+        resolved_limit = self._coerce_positive_int(limit, default=20)
+        return self.db.list_memory_outcomes(
+            namespace=ns,
+            session_id=clean_session_id,
+            memory_id=resolved_memory_id,
+            limit=resolved_limit,
+        )

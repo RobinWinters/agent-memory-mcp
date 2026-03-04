@@ -63,6 +63,46 @@ def register_memory_tools(
         resolved_ns = authorize(namespace, "memory:read", api_key)
         return get_service().memory_search(query=query, k=k, namespace=resolved_ns)
 
+    @mcp.tool(name="memory.record_outcome")
+    def memory_record_outcome(
+        session_id: str,
+        outcome_type: str,
+        summary: str,
+        memory_id: int | None = None,
+        score: float | None = None,
+        metadata: dict[str, Any] | None = None,
+        namespace: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Record whether a memory-backed action succeeded or failed."""
+        resolved_ns = authorize(namespace, "memory:write", api_key)
+        return get_service().memory_record_outcome(
+            session_id=session_id,
+            outcome_type=outcome_type,
+            summary=summary,
+            memory_id=memory_id,
+            score=score,
+            metadata=metadata,
+            namespace=resolved_ns,
+        )
+
+    @mcp.tool(name="memory.outcomes")
+    def memory_outcomes(
+        session_id: str | None = None,
+        memory_id: int | None = None,
+        limit: int = 20,
+        namespace: str | None = None,
+        api_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List recent recorded outcomes, optionally filtered by session or memory."""
+        resolved_ns = authorize(namespace, "memory:read", api_key)
+        return get_service().memory_list_outcomes(
+            session_id=session_id,
+            memory_id=memory_id,
+            limit=limit,
+            namespace=resolved_ns,
+        )
+
     @mcp.tool(name="memory.handoff_export")
     def memory_handoff_export(
         query: str | None = None,

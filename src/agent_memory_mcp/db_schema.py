@@ -4,6 +4,7 @@ NAMESPACED_TABLES = [
     "sessions",
     "events",
     "memories",
+    "memory_outcomes",
     "policy_proposals",
     "policy_evaluations",
     "policy_versions",
@@ -41,6 +42,18 @@ class DatabaseSchemaMixin:
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 embedding_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                namespace TEXT NOT NULL DEFAULT 'default',
+                session_id TEXT NOT NULL,
+                memory_id INTEGER,
+                outcome_type TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                score REAL,
                 created_at TEXT NOT NULL,
                 metadata_json TEXT NOT NULL
             );
@@ -115,6 +128,8 @@ class DatabaseSchemaMixin:
             CREATE INDEX IF NOT EXISTS idx_sessions_namespace ON sessions(namespace, session_id);
             CREATE INDEX IF NOT EXISTS idx_events_ns_session ON events(namespace, session_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_memories_ns_session ON memories(namespace, session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_outcomes_ns_session ON memory_outcomes(namespace, session_id, id);
+            CREATE INDEX IF NOT EXISTS idx_memory_outcomes_ns_memory ON memory_outcomes(namespace, memory_id, id);
             CREATE INDEX IF NOT EXISTS idx_policy_prop_ns ON policy_proposals(namespace, proposal_id);
             CREATE INDEX IF NOT EXISTS idx_policy_eval_ns_proposal ON policy_evaluations(namespace, proposal_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_policy_ver_ns_active ON policy_versions(namespace, is_active, created_at);
