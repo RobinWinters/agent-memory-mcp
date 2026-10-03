@@ -45,7 +45,7 @@ The system runs as three processes:
 ## Quickstart
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/RobinWinters/agent-memory-mcp.git
 cd agent-memory-mcp
 python3 -m venv .venv
 source .venv/bin/activate
@@ -364,3 +364,9 @@ pytest tests/test_handoff_schema.py -q
 pytest tests/test_handoff_cli.py -q
 pytest tests/test_adapter_cli.py -q
 ```
+
+## Repository contact and professional context
+
+Repository contact: [Robin Winters](https://github.com/RobinWinters). Robin builds native iOS software and applied AI systems, with a focus on fitness technology. [Portfolio](https://robin.ac/) · [Professional record](https://github.com/RobinWinters/RobinWinters/tree/Radpository/professional).
+
+This contact identifies the account responsible for this public repository. It does not replace contributor, dependency or upstream credits, or establish authorship of every component. Existing licenses and acknowledgments remain applicable.
